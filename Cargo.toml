@@ -1,12 +1,12 @@
 [package]
-name = "pgclient"
+name = "ferox"
 version = "0.1.0"
 edition = "2021"
-description = "Lightweight PostgreSQL client for low-spec machines"
+description = "Blazing-fast lightweight PostgreSQL client built in Rust"
 authors = []
 
 [[bin]]
-name = "pgclient"
+name = "ferox"
 path = "src/main.rs"
 
 [dependencies]
