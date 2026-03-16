@@ -6,6 +6,7 @@ use crate::{
     history::QueryHistory,
     ui::{
         connection_dialog::ConnectionDialog,
+        dashboard::Dashboard,
         join_builder::{JoinAction, JoinBuilder},
         sidebar::{Sidebar, SidebarAction},
         tab_manager::TabManager,
@@ -26,6 +27,7 @@ pub struct PgClientApp {
     // Dialogs
     pub table_dialog: TableDialog,
     pub join_builder: JoinBuilder,
+    pub dashboard: Dashboard,
 
     // App state
     pub config: AppConfig,
@@ -74,6 +76,7 @@ impl PgClientApp {
             connection_dialog: ConnectionDialog::default(),
             table_dialog: TableDialog::default(),
             join_builder: JoinBuilder::default(),
+            dashboard: Dashboard::default(),
             config,
             history,
             status: ConnectionStatus::Disconnected,
@@ -141,6 +144,9 @@ impl PgClientApp {
                         let _ = self.db_tx.send(DbCommand::LoadTables { schema });
                     }
                 }
+                DbEvent::DashboardData { table_stats, connections, index_stats } => {
+                    self.dashboard.set_data(table_stats, connections, index_stats);
+                }
             }
         }
     }
@@ -173,6 +179,10 @@ impl PgClientApp {
             ui.menu_button("Query", |ui| {
                 if ui.button("Join Builder…").clicked() {
                     self.join_builder.open();
+                    ui.close_menu();
+                }
+                if ui.button("Dashboard…").clicked() {
+                    self.dashboard.open();
                     ui.close_menu();
                 }
                 ui.separator();
@@ -263,6 +273,21 @@ impl eframe::App for PgClientApp {
             _ => "pgclient".to_owned(),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+
+        // Update autocomplete completion data each frame
+        let (comp_tables, comp_columns) = self.sidebar.completion_data();
+        self.tab_manager.update_completion_data(comp_tables, comp_columns);
+
+        // Dashboard load / refresh logic
+        if self.dashboard.needs_load() {
+            self.dashboard.set_loading();
+            let _ = self.db_tx.send(DbCommand::LoadDashboard);
+        }
+        if self.dashboard.show(ctx) {
+            // Refresh button clicked
+            self.dashboard.set_loading();
+            let _ = self.db_tx.send(DbCommand::LoadDashboard);
+        }
 
         let should_execute = ctx.input(|i| {
             i.key_pressed(egui::Key::F5)

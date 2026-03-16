@@ -89,6 +89,27 @@ impl Sidebar {
         self.schemas.iter().map(|s| s.name.clone()).collect()
     }
 
+    /// Returns (table_names, column_names) for autocomplete.
+    pub fn completion_data(&self) -> (Vec<String>, Vec<String>) {
+        let mut tables = Vec::new();
+        let mut columns = Vec::new();
+        for schema_tables in self.tables.values() {
+            for t in schema_tables {
+                tables.push(t.name.clone());
+                let key = (t.schema.clone(), t.name.clone());
+                if let Some(details) = self.table_details.get(&key) {
+                    for col in &details.columns {
+                        if !columns.contains(&col.name) {
+                            columns.push(col.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        tables.dedup();
+        (tables, columns)
+    }
+
     /// Returns all known tables with their loaded column names,
     /// grouped by schema — used by the Join Builder.
     pub fn all_tables_with_columns(&self) -> Vec<(String, Vec<(String, Vec<String>)>)> {

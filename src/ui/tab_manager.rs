@@ -162,6 +162,12 @@ impl TabManager {
         self.tabs[self.active].panel.start_browse(schema, table, db_tx);
     }
 
+    pub fn update_completion_data(&mut self, tables: Vec<String>, columns: Vec<String>) {
+        for t in &mut self.tabs {
+            t.panel.set_completion_data(tables.clone(), columns.clone());
+        }
+    }
+
     pub fn trigger_export_csv(&mut self, db_tx: &Sender<DbCommand>) {
         self.active_panel_mut().trigger_export_csv(db_tx);
     }

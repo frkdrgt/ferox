@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
-use crate::db::metadata::{self, ColumnInfo, ForeignKeyInfo, IndexInfo, TableInfo};
+use crate::db::metadata::{self, ColumnInfo, ConnInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
 /// Commands sent from the UI thread → DB worker.
@@ -23,6 +23,7 @@ pub enum DbCommand {
     CancelQuery,
     ExportCsv { sql: String, path: String },
     ExportJson { sql: String, path: String },
+    LoadDashboard,
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -46,6 +47,11 @@ pub enum DbEvent {
     ExportDone(String),
     /// DDL executed successfully.
     DdlDone,
+    DashboardData {
+        table_stats: Vec<TableStat>,
+        connections: Vec<ConnInfo>,
+        index_stats: Vec<IndexStat>,
+    },
 }
 
 /// Handle that owns the DB background thread.
@@ -231,6 +237,19 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
                         }
                     }
+                }
+            }
+
+            DbCommand::LoadDashboard => {
+                if let Some(c) = &client {
+                    let ts = metadata::load_table_stats(c).await.unwrap_or_default();
+                    let conns = metadata::load_connections(c).await.unwrap_or_default();
+                    let idxs = metadata::load_index_stats(c).await.unwrap_or_default();
+                    let _ = evt_tx.send(DbEvent::DashboardData {
+                        table_stats: ts,
+                        connections: conns,
+                        index_stats: idxs,
+                    });
                 }
             }
         }
