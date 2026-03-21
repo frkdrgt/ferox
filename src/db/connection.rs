@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
-use crate::db::metadata::{self, ColumnInfo, ConnInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
+use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
 /// Commands sent from the UI thread → DB worker.
@@ -24,6 +24,7 @@ pub enum DbCommand {
     ExportCsv { sql: String, path: String },
     ExportJson { sql: String, path: String },
     LoadDashboard,
+    LoadErDiagram { schema: String },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -52,6 +53,7 @@ pub enum DbEvent {
         connections: Vec<ConnInfo>,
         index_stats: Vec<IndexStat>,
     },
+    ErDiagramData { schema: String, tables: Vec<ErTableInfo> },
 }
 
 /// Handle that owns the DB background thread.
@@ -252,6 +254,19 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                     });
                 }
             }
+
+            DbCommand::LoadErDiagram { schema } => {
+                if let Some(c) = &client {
+                    match metadata::load_er_diagram(c, &schema).await {
+                        Ok(tables) => {
+                            let _ = evt_tx.send(DbEvent::ErDiagramData { schema, tables });
+                        }
+                        Err(e) => {
+                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -259,7 +274,35 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
 async fn connect_pg(
     profile: &ConnectionProfile,
 ) -> Result<(tokio_postgres::Client, tokio_postgres::CancelToken)> {
-    let connstr = profile.connection_string();
+    let (effective_host, effective_port) = match &profile.ssh_tunnel {
+        Some(ssh) if ssh.enabled => {
+            let port = super::ssh::establish_tunnel(
+                &ssh.host,
+                ssh.port,
+                &ssh.user,
+                &ssh.auth,
+                &profile.host,
+                profile.port,
+            )
+            .await?;
+            ("127.0.0.1".to_owned(), port)
+        }
+        _ => (profile.host.clone(), profile.port),
+    };
+
+    let connstr = if effective_host != profile.host || effective_port != profile.port {
+        let ssl = match profile.ssl {
+            SslMode::Disable => "disable",
+            SslMode::Prefer => "prefer",
+            SslMode::Require => "require",
+        };
+        format!(
+            "host={} port={} user={} password={} dbname={} sslmode={}",
+            effective_host, effective_port, profile.user, profile.password, profile.database, ssl
+        )
+    } else {
+        profile.connection_string()
+    };
 
     match profile.ssl {
         SslMode::Disable => {

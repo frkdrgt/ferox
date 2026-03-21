@@ -35,10 +35,13 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn load_icon() -> egui::IconData {
-    // Placeholder icon — replace with actual icon bytes in production
-    egui::IconData {
-        rgba: vec![0u8; 32 * 32 * 4],
-        width: 32,
-        height: 32,
-    }
+    let bytes = include_bytes!("../assets/logo.png");
+    // Resize to 256×256 — winit on Windows ignores icons larger than this for
+    // the taskbar (ICON_BIG). The title bar uses the same data scaled down.
+    let img = image::load_from_memory(bytes)
+        .expect("Failed to decode logo.png")
+        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    let (width, height) = img.dimensions();
+    egui::IconData { rgba: img.into_raw(), width, height }
 }

@@ -334,6 +334,91 @@ pub async fn load_index_stats(client: &Client) -> Result<Vec<IndexStat>> {
     Ok(result)
 }
 
+// ── ER Diagram types ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ParsedForeignKey {
+    pub constraint_name: String,
+    pub source_columns: Vec<String>,
+    pub target_schema: String,
+    pub target_table: String,
+    pub target_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ErTableInfo {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<ColumnInfo>,
+    pub primary_keys: Vec<String>,
+    pub foreign_keys: Vec<ParsedForeignKey>,
+}
+
+/// Parse a pg_get_constraintdef FK definition like:
+///   "FOREIGN KEY (col) REFERENCES [schema.]table(col)"
+pub fn parse_foreign_key(fk: &ForeignKeyInfo) -> Option<ParsedForeignKey> {
+    let def = &fk.definition;
+    let fk_kw = "FOREIGN KEY (";
+    let fk_start = def.find(fk_kw)?;
+    let after_fk = &def[fk_start + fk_kw.len()..];
+    let src_end = after_fk.find(')')?;
+    let source_columns: Vec<String> = after_fk[..src_end]
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect();
+
+    let ref_kw = "REFERENCES ";
+    let ref_start = def.find(ref_kw)?;
+    let after_ref = &def[ref_start + ref_kw.len()..];
+    let paren_pos = after_ref.find('(')?;
+    let table_part = after_ref[..paren_pos].trim();
+
+    let (target_schema, target_table) = if let Some(dot) = table_part.find('.') {
+        (table_part[..dot].to_owned(), table_part[dot + 1..].to_owned())
+    } else {
+        (String::new(), table_part.to_owned())
+    };
+
+    let after_paren = &after_ref[paren_pos + 1..];
+    let tgt_end = after_paren.find(')')?;
+    let target_columns: Vec<String> = after_paren[..tgt_end]
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect();
+
+    Some(ParsedForeignKey {
+        constraint_name: fk.name.clone(),
+        source_columns,
+        target_schema,
+        target_table,
+        target_columns,
+    })
+}
+
+pub async fn load_er_diagram(client: &Client, schema: &str) -> Result<Vec<ErTableInfo>> {
+    let tables = load_tables(client, schema).await?;
+    let mut result = Vec::new();
+
+    for t in &tables {
+        if !matches!(t.kind, TableKind::Table) {
+            continue;
+        }
+        let columns = load_columns(client, schema, &t.name).await.unwrap_or_default();
+        let primary_keys = load_primary_key(client, schema, &t.name).await.unwrap_or_default();
+        let raw_fks = load_foreign_keys(client, schema, &t.name).await.unwrap_or_default();
+        let foreign_keys = raw_fks.iter().filter_map(parse_foreign_key).collect();
+
+        result.push(ErTableInfo {
+            schema: schema.to_owned(),
+            table: t.name.clone(),
+            columns,
+            primary_keys,
+            foreign_keys,
+        });
+    }
+    Ok(result)
+}
+
 pub async fn load_columns(
     client: &Client,
     schema: &str,

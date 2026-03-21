@@ -3,10 +3,11 @@ use std::sync::mpsc::Sender;
 
 use egui::{Color32, RichText, Sense};
 
-use crate::db::metadata::{ConnInfo, IndexStat, TableStat};
+use crate::db::metadata::{ConnInfo, ErTableInfo, IndexStat, TableStat};
 use crate::db::{DbCommand, QueryResult};
 use crate::history::QueryHistory;
 use crate::ui::dashboard::Dashboard;
+use crate::ui::er_diagram::ErDiagram;
 use crate::ui::query_panel::QueryPanel;
 
 // ── Tab content ───────────────────────────────────────────────────────────────
@@ -14,6 +15,7 @@ use crate::ui::query_panel::QueryPanel;
 enum TabContent {
     Query(QueryPanel),
     Dashboard,
+    ErDiagram(ErDiagram),
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
@@ -30,14 +32,14 @@ impl Tab {
     fn panel(&self) -> Option<&QueryPanel> {
         match &self.content {
             TabContent::Query(p) => Some(p),
-            TabContent::Dashboard => None,
+            _ => None,
         }
     }
 
     fn panel_mut(&mut self) -> Option<&mut QueryPanel> {
         match &mut self.content {
             TabContent::Query(p) => Some(p),
-            TabContent::Dashboard => None,
+            _ => None,
         }
     }
 }
@@ -121,6 +123,58 @@ impl TabManager {
             self.active = self.tabs.len() - 1;
         }
         self.dashboard.reset();
+    }
+
+    /// Open a new ER diagram tab for the given schema.
+    pub fn open_er_diagram(&mut self, schema: String, conn_id: usize) {
+        // Reuse existing ER diagram tab for same schema if present.
+        if let Some(idx) = self.tabs.iter().position(|t| {
+            matches!(&t.content, TabContent::ErDiagram(d) if d.schema() == Some(schema.as_str()))
+        }) {
+            self.active = idx;
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            id,
+            title: format!("📐 {schema}"),
+            content: TabContent::ErDiagram(ErDiagram::start_loading(schema)),
+            conn_id,
+        });
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Returns (conn_id, schema) if the active tab is an ER diagram that needs loading.
+    pub fn er_diagram_needs_load(&self) -> Option<(usize, String)> {
+        let tab = self.tabs.get(self.active)?;
+        if let TabContent::ErDiagram(d) = &tab.content {
+            if d.needs_load() {
+                let schema = d.schema()?.to_owned();
+                return Some((tab.conn_id, schema));
+            }
+        }
+        None
+    }
+
+    pub fn mark_er_load_requested(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            if let TabContent::ErDiagram(d) = &mut tab.content {
+                d.mark_load_requested();
+            }
+        }
+    }
+
+    /// Deliver ER diagram data to any tab that is loading the given schema.
+    pub fn set_er_diagram_data(&mut self, schema: &str, tables: Vec<ErTableInfo>) {
+        for tab in &mut self.tabs {
+            if let TabContent::ErDiagram(d) = &mut tab.content {
+                if d.schema() == Some(schema) {
+                    d.set_data(schema.to_owned(), tables);
+                    return;
+                }
+            }
+        }
     }
 
     pub fn close_tab(&mut self, idx: usize) {
@@ -345,17 +399,21 @@ impl TabManager {
 
         // ── Active panel ──────────────────────────────────────────────────────
         let active_idx = self.active;
-        let is_dashboard = matches!(
-            self.tabs.get(active_idx).map(|t| &t.content),
-            Some(TabContent::Dashboard)
-        );
+        let tab_kind = self.tabs.get(active_idx).map(|t| match &t.content {
+            TabContent::Dashboard => 0u8,
+            TabContent::ErDiagram(_) => 1u8,
+            TabContent::Query(_) => 2u8,
+        });
 
-        if is_dashboard {
+        if tab_kind == Some(0) {
             if self.dashboard.show_inline(ui) {
-                // Refresh clicked
                 self.dashboard.set_loading();
-                // Signal to app that dashboard needs reload — the app handles sending the command.
-                // We store the conn_id so app can find it via dashboard_conn_id().
+            }
+        } else if tab_kind == Some(1) {
+            if let Some(tab) = self.tabs.get_mut(active_idx) {
+                if let TabContent::ErDiagram(d) = &mut tab.content {
+                    d.show(ui);
+                }
             }
         } else if let Some(tab) = self.tabs.get(active_idx) {
             let tab_conn_id = tab.conn_id;
@@ -404,7 +462,7 @@ impl TabManager {
             .enumerate()
             .map(|(i, t)| {
                 let is_running = self.running_tabs.values().any(|&rt| rt == i);
-                let is_dashboard = matches!(t.content, TabContent::Dashboard);
+                let is_dashboard = matches!(t.content, TabContent::Dashboard | TabContent::ErDiagram(_));
                 (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard)
             })
             .collect();

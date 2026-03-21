@@ -226,6 +226,9 @@ impl PgClientApp {
                             );
                         }
                     }
+                    DbEvent::ErDiagramData { schema, tables } => {
+                        self.tab_manager.set_er_diagram_data(&schema, tables);
+                    }
                 }
             }
         }
@@ -434,6 +437,14 @@ impl eframe::App for PgClientApp {
             }
         }
 
+        // ER diagram load poll
+        if let Some((er_conn_id, schema)) = self.tab_manager.er_diagram_needs_load() {
+            if let Some(conn) = self.connections.iter().find(|c| c.id == er_conn_id) {
+                let _ = conn.db_tx.send(DbCommand::LoadErDiagram { schema });
+                self.tab_manager.mark_er_load_requested();
+            }
+        }
+
         let should_execute = ctx.input(|i| {
             i.key_pressed(egui::Key::F5)
                 || (i.modifiers.ctrl && i.key_pressed(egui::Key::Enter))
@@ -513,6 +524,13 @@ impl eframe::App for PgClientApp {
                                 let schemas = conn.sidebar.schema_names();
                                 self.table_dialog.open_new(schema, schemas);
                             }
+                        }
+                        SidebarAction::ViewErDiagram { schema } => {
+                            self.tab_manager.open_er_diagram(schema.clone(), conn_id);
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let _ = conn.db_tx.send(DbCommand::LoadErDiagram { schema });
+                            }
+                            self.tab_manager.mark_er_load_requested();
                         }
                         SidebarAction::EditTable { schema, table } => {
                             let cached = self

@@ -14,6 +14,7 @@ pub enum SidebarAction {
     RunSql(String),
     NewTable { schema: String },
     EditTable { schema: String, table: String },
+    ViewErDiagram { schema: String },
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -297,6 +298,12 @@ impl Sidebar {
                         ui.separator();
                         if ui.button("＋  New Table…").clicked() {
                             actions.push(SidebarAction::NewTable {
+                                schema: schema_name_for_menu.clone(),
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("📐  View ER Diagram").clicked() {
+                            actions.push(SidebarAction::ViewErDiagram {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();

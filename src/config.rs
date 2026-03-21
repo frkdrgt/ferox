@@ -2,6 +2,34 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SshAuthMethod {
+    Password(String),
+    PrivateKey { path: String },
+}
+
+impl Default for SshAuthMethod {
+    fn default() -> Self {
+        SshAuthMethod::Password(String::new())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SshTunnelConfig {
+    pub enabled: bool,
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuthMethod,
+}
+
 fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -20,6 +48,8 @@ pub struct ConnectionProfile {
     pub database: String,
     #[serde(default)]
     pub ssl: SslMode,
+    #[serde(default)]
+    pub ssh_tunnel: Option<SshTunnelConfig>,
 }
 
 impl Default for ConnectionProfile {
@@ -32,6 +62,7 @@ impl Default for ConnectionProfile {
             password: String::new(),
             database: "postgres".into(),
             ssl: SslMode::Prefer,
+            ssh_tunnel: None,
         }
     }
 }
