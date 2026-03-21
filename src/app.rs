@@ -7,7 +7,10 @@ use crate::{
     ui::{
         connection_dialog::ConnectionDialog,
         join_builder::{JoinAction, JoinBuilder},
-        sidebar::{Sidebar, SidebarAction},
+        sidebar::{
+            pk_from_indexes, script_delete, script_insert, script_select, script_update,
+            Sidebar, SidebarAction, ScriptKind,
+        },
         tab_manager::TabManager,
         table_dialog::{TableDialog, TableDialogAction},
     },
@@ -26,6 +29,9 @@ pub struct ConnState {
     pub pending_edit_table: Option<(String, String)>,
     /// True while a safe-mode BEGIN transaction is open on this connection.
     pub in_transaction: bool,
+    /// Script kind pending for (schema, table) — set when GenerateScript fires
+    /// before columns are loaded; fulfilled when TableDetails arrives.
+    pub pending_script: Option<(String, String, ScriptKind)>,
 }
 
 // ── App ────────────────────────────────────────────────────────────────────────
@@ -111,6 +117,7 @@ impl PgClientApp {
                 pending_ddl_schema: None,
                 pending_edit_table: None,
                 in_transaction: false,
+                pending_script: None,
             });
             self.active_conn = self.connections.len() - 1;
 
@@ -144,6 +151,7 @@ impl PgClientApp {
             pending_ddl_schema: None,
             pending_edit_table: None,
             in_transaction: false,
+            pending_script: None,
         });
         self.active_conn = self.connections.len() - 1;
 
@@ -194,9 +202,30 @@ impl PgClientApp {
                             &schema,
                             &table,
                             columns.clone(),
-                            indexes,
+                            indexes.clone(),
                             foreign_keys,
                         );
+
+                        // Fulfil a pending script request if this is the right table.
+                        if let Some((ps, pt, kind)) =
+                            self.connections[i].pending_script.take()
+                        {
+                            if ps == schema && pt == table {
+                                let pk = pk_from_indexes(&indexes);
+                                let sql = match kind {
+                                    ScriptKind::Select => script_select(&schema, &table, &columns),
+                                    ScriptKind::Insert => script_insert(&schema, &table, &columns),
+                                    ScriptKind::Update => script_update(&schema, &table, &columns, &pk),
+                                    ScriptKind::Delete => script_delete(&schema, &table, &columns, &pk),
+                                };
+                                self.tab_manager.set_sql(sql);
+                            } else {
+                                // Different table — put it back.
+                                self.connections[i].pending_script =
+                                    Some((ps, pt, kind));
+                            }
+                        }
+
                         if self.connections[i].pending_edit_table
                             == Some((schema.clone(), table.clone()))
                         {
@@ -613,6 +642,35 @@ impl eframe::App for PgClientApp {
                         }
                         SidebarAction::SetSql(sql) => {
                             self.tab_manager.set_sql(sql);
+                        }
+                        SidebarAction::GenerateScript { schema, table, kind } => {
+                            let details = self
+                                .connections
+                                .get(self.active_conn)
+                                .and_then(|c| c.sidebar.get_table_details(&schema, &table))
+                                .filter(|d| d.loaded)
+                                .map(|d| (d.columns.clone(), d.indexes.clone()));
+
+                            if let Some((cols, idxs)) = details {
+                                let pk = pk_from_indexes(&idxs);
+                                let sql = match kind {
+                                    ScriptKind::Select => script_select(&schema, &table, &cols),
+                                    ScriptKind::Insert => script_insert(&schema, &table, &cols),
+                                    ScriptKind::Update => script_update(&schema, &table, &cols, &pk),
+                                    ScriptKind::Delete => script_delete(&schema, &table, &cols, &pk),
+                                };
+                                self.tab_manager.set_sql(sql);
+                            } else {
+                                // Columns not loaded yet — request them and remember.
+                                if let Some(conn) = self.connections.get_mut(self.active_conn) {
+                                    conn.pending_script =
+                                        Some((schema.clone(), table.clone(), kind));
+                                    let _ = conn.db_tx.send(DbCommand::LoadDetails {
+                                        schema,
+                                        table,
+                                    });
+                                }
+                            }
                         }
                         SidebarAction::ViewErDiagram { schema } => {
                             self.tab_manager.open_er_diagram(schema.clone(), conn_id);

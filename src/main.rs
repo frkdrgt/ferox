@@ -4,11 +4,15 @@ mod app;
 mod config;
 mod db;
 mod history;
+mod logger;
 mod ui;
 
 use app::PgClientApp;
 
 fn main() -> anyhow::Result<()> {
+    // Panic hook + startup log — must be first.
+    logger::setup();
+
     // Initialize tokio runtime on a separate thread pool for DB operations
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -26,12 +30,18 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "pgclient",
         native_options,
         Box::new(|cc| Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+    );
+
+    match &result {
+        Ok(_) => logger::write_entry("INFO", "=== Ferox exited normally ==="),
+        Err(e) => logger::error(&format!("eframe fatal error: {e}")),
+    }
+
+    result.map_err(|e| anyhow::anyhow!("eframe error: {e}"))
 }
 
 fn load_icon() -> egui::IconData {

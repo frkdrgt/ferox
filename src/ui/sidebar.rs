@@ -5,6 +5,15 @@ use egui::{Color32, RichText, Sense, Vec2};
 
 use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo, TableKind};
 
+/// Script kinds for the Generate Script menu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScriptKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
 /// Actions the sidebar can request from the rest of the app.
 #[derive(Debug)]
 pub enum SidebarAction {
@@ -17,11 +26,13 @@ pub enum SidebarAction {
     NewTable { schema: String },
     EditTable { schema: String, table: String },
     ViewErDiagram { schema: String },
+    /// Generate a script for schema.table — app.rs resolves columns if needed.
+    GenerateScript { schema: String, table: String, kind: ScriptKind },
 }
 
-// ── Script generation helpers ─────────────────────────────────────────────────
+// ── Script generation helpers (pub — used by app.rs when details arrive) ─────
 
-fn placeholder(data_type: &str) -> &'static str {
+pub fn placeholder(data_type: &str) -> &'static str {
     let t = data_type.to_lowercase();
     if t.contains("int") || t.contains("serial") || t.contains("numeric")
         || t.contains("float") || t.contains("double") || t.contains("decimal")
@@ -41,7 +52,7 @@ fn placeholder(data_type: &str) -> &'static str {
     }
 }
 
-fn pk_from_indexes(indexes: &[IndexInfo]) -> Vec<String> {
+pub fn pk_from_indexes(indexes: &[IndexInfo]) -> Vec<String> {
     indexes
         .iter()
         .find(|i| i.name.ends_with("_pkey") || i.name.to_lowercase().contains("primary"))
@@ -62,7 +73,7 @@ fn pk_from_indexes(indexes: &[IndexInfo]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn script_select(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+pub fn script_select(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
     if cols.is_empty() {
         return format!("SELECT *\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;");
     }
@@ -74,7 +85,7 @@ fn script_select(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
     format!("SELECT\n{col_list}\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;")
 }
 
-fn script_insert(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+pub fn script_insert(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
     let insertable: Vec<&ColumnInfo> = cols
         .iter()
         .filter(|c| {
@@ -107,7 +118,7 @@ fn script_insert(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
     format!("INSERT INTO \"{schema}\".\"{table}\" (\n{col_list}\n) VALUES (\n{val_list}\n);")
 }
 
-fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+pub fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
     let pk_set: std::collections::HashSet<&str> = pk.iter().map(|s| s.as_str()).collect();
     let set_cols: Vec<&ColumnInfo> = cols.iter().filter(|c| !pk_set.contains(c.name.as_str())).collect();
     let set_clause = if set_cols.is_empty() {
@@ -133,7 +144,7 @@ fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) 
     format!("UPDATE \"{schema}\".\"{table}\"\nSET\n{set_clause}\nWHERE\n{where_clause};")
 }
 
-fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+pub fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
     let where_clause = if pk.is_empty() {
         "    1=1  -- ⚠️ replace with actual condition".to_owned()
     } else {
@@ -554,35 +565,20 @@ impl Sidebar {
 
                                     // ── Script generation ─────────────────
                                     ui.menu_button("📄  Generate Script", |ui| {
-                                        let (cols, pk) = details_for_menu
-                                            .as_ref()
-                                            .filter(|d| d.loaded)
-                                            .map(|d| (d.columns.as_slice(), pk_from_indexes(&d.indexes)))
-                                            .unwrap_or((&[], vec![]));
-
-                                        if ui.button("SELECT").clicked() {
-                                            actions.push(SidebarAction::SetSql(
-                                                script_select(&schema_name, &table_name, cols),
-                                            ));
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("INSERT").clicked() {
-                                            actions.push(SidebarAction::SetSql(
-                                                script_insert(&schema_name, &table_name, cols),
-                                            ));
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("UPDATE").clicked() {
-                                            actions.push(SidebarAction::SetSql(
-                                                script_update(&schema_name, &table_name, cols, &pk),
-                                            ));
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("DELETE").clicked() {
-                                            actions.push(SidebarAction::SetSql(
-                                                script_delete(&schema_name, &table_name, cols, &pk),
-                                            ));
-                                            ui.close_menu();
+                                        for (label, kind) in [
+                                            ("SELECT", ScriptKind::Select),
+                                            ("INSERT", ScriptKind::Insert),
+                                            ("UPDATE", ScriptKind::Update),
+                                            ("DELETE", ScriptKind::Delete),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                actions.push(SidebarAction::GenerateScript {
+                                                    schema: schema_name.clone(),
+                                                    table: table_name.clone(),
+                                                    kind,
+                                                });
+                                                ui.close_menu();
+                                            }
                                         }
                                     });
                                     ui.separator();
