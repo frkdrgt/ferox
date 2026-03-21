@@ -190,14 +190,14 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 
 ## Roadmap
 
-- [ ] **Auto-complete** — table names, column names, SQL keywords
+- [x] **Auto-complete** — table names, column names, SQL keywords
+- [x] **Database dashboard** — table sizes, index bloat, active connections
+- [x] **Multiple simultaneous connections** — separate DB threads per connection
 - [ ] **SSH tunnel** — connect through a jump host
 - [ ] **ER diagram** — visual schema relationships
-- [ ] **Query formatter** — one-click SQL beautification
-- [ ] **Multiple simultaneous connections** — separate DB threads per connection
+- [x] **Query formatter** — one-click SQL beautification
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch
-- [ ] **Database dashboard** — table sizes, index bloat, active connections
 - [ ] **Result diff** — compare two query results side-by-side
 - [ ] **CSV / JSON import** — drag-and-drop data into a table
 

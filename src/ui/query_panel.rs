@@ -433,9 +433,29 @@ impl QueryPanel {
 
                 // Ctrl+Space: force-show autocomplete
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space)) {
-                    self.autocomplete.visible = true;
                     self.autocomplete.force_show();
                 }
+
+                // Read cursor from the PREVIOUS frame before the TextEdit re-renders.
+                // We need this for Tab acceptance (Tab must be consumed before the
+                // TextEdit sees it, otherwise egui cycles focus to the next widget).
+                let prev_cursor_idx: usize = egui::TextEdit::load_state(
+                    ui.ctx(),
+                    egui::Id::new("ferox_sql_editor"),
+                )
+                .and_then(|s| s.cursor.char_range())
+                .map(|r| r.primary.index)
+                .unwrap_or(self.sql.len());
+
+                // Consume Enter (no modifiers) BEFORE the TextEdit if autocomplete is
+                // visible. Tab cannot be intercepted reliably because egui cycles
+                // focus at the context level before any widget code runs.
+                let enter_accepted = self.autocomplete.is_visible()
+                    && ui.input_mut(|i| {
+                        // Only plain Enter — Ctrl+Enter still runs the query.
+                        !i.modifiers.any()
+                            && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    });
 
                 let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
                     let job = highlight_sql(ui, text, wrap_width);
@@ -446,10 +466,30 @@ impl QueryPanel {
                     .layouter(&mut layouter)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Enter SQL… (F5 or Ctrl+Enter to execute)");
+                    .hint_text("Enter SQL… (Ctrl+Enter to run, Enter to accept autocomplete)");
                 let resp = ui.add_sized([ui.available_width(), editor_height], editor);
 
-                // Get cursor position from TextEdit state
+                // Handle Enter acceptance (consumed before the TextEdit).
+                if enter_accepted {
+                    if let Some(accepted) = self.autocomplete.accept() {
+                        let word_start = self.autocomplete.word_start;
+                        self.sql.replace_range(word_start..prev_cursor_idx, &accepted);
+                        let new_pos = word_start + accepted.len();
+                        if let Some(mut state) = egui::TextEdit::load_state(
+                            ui.ctx(),
+                            egui::Id::new("ferox_sql_editor"),
+                        ) {
+                            let ccursor = egui::text::CCursor::new(new_pos);
+                            state.cursor.set_char_range(Some(
+                                egui::text::CCursorRange::one(ccursor),
+                            ));
+                            state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
+                        }
+                    }
+                    resp.request_focus();
+                }
+
+                // Get cursor position from this frame's TextEdit state.
                 let cursor_idx: usize = egui::TextEdit::load_state(
                     ui.ctx(),
                     egui::Id::new("ferox_sql_editor"),
@@ -458,7 +498,7 @@ impl QueryPanel {
                 .map(|r| r.primary.index)
                 .unwrap_or(self.sql.len());
 
-                // Update autocomplete suggestions
+                // Update autocomplete suggestions.
                 let completion_tables = self.completion_tables.clone();
                 let completion_columns = self.completion_columns.clone();
                 self.autocomplete.update(
@@ -471,27 +511,14 @@ impl QueryPanel {
                     self.autocomplete.visible = true;
                 }
 
-                // Handle autocomplete keyboard navigation
-                if self.autocomplete.is_visible() {
-                    if ui.input_mut(|i| {
-                        i.consume_key(egui::Modifiers::NONE, egui::Key::Tab)
-                    }) {
-                        if let Some(accepted) = self.autocomplete.accept() {
-                            let word_start = self.autocomplete.word_start;
-                            self.sql.replace_range(word_start..cursor_idx, &accepted);
-                            let new_pos = word_start + accepted.len();
-                            if let Some(mut state) = egui::TextEdit::load_state(
-                                ui.ctx(),
-                                egui::Id::new("ferox_sql_editor"),
-                            ) {
-                                let ccursor = egui::text::CCursor::new(new_pos);
-                                state.cursor.set_char_range(Some(
-                                    egui::text::CCursorRange::one(ccursor),
-                                ));
-                                state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
-                            }
-                        }
-                    }
+                // Dismiss autocomplete when the editor loses focus so the popup
+                // Area (Order::Foreground) doesn't block clicks on the result table.
+                if !resp.has_focus() {
+                    self.autocomplete.dismiss();
+                }
+
+                // Remaining keyboard navigation (only when editor has focus).
+                if self.autocomplete.is_visible() && resp.has_focus() {
                     if ui.input_mut(|i| {
                         i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                     }) {
@@ -505,7 +532,7 @@ impl QueryPanel {
                     }
                 }
 
-                // Show autocomplete popup and handle click acceptance
+                // Show autocomplete popup; handle mouse-click acceptance.
                 let editor_rect = resp.rect;
                 if let Some(accepted) = self.autocomplete.show(ui, editor_rect) {
                     let word_start = self.autocomplete.word_start;
@@ -521,6 +548,7 @@ impl QueryPanel {
                         ));
                         state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
                     }
+                    resp.request_focus();
                 }
 
                 if resp.has_focus()
@@ -1017,3 +1045,6 @@ fn pick_save_path(ext: &str) -> Option<String> {
         .save_file()
         .map(|p| p.to_string_lossy().into_owned())
 }
+
+// ── SQL formatter ─────────────────────────────────────────────────────────────
+

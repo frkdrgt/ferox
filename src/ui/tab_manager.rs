@@ -1,17 +1,45 @@
+use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
 use egui::{Color32, RichText, Sense};
 
+use crate::db::metadata::{ConnInfo, IndexStat, TableStat};
 use crate::db::{DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::ui::dashboard::Dashboard;
 use crate::ui::query_panel::QueryPanel;
+
+// ── Tab content ───────────────────────────────────────────────────────────────
+
+enum TabContent {
+    Query(QueryPanel),
+    Dashboard,
+}
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 struct Tab {
     id: usize,
     title: String,
-    panel: QueryPanel,
+    content: TabContent,
+    /// Which connection this tab belongs to.
+    conn_id: usize,
+}
+
+impl Tab {
+    fn panel(&self) -> Option<&QueryPanel> {
+        match &self.content {
+            TabContent::Query(p) => Some(p),
+            TabContent::Dashboard => None,
+        }
+    }
+
+    fn panel_mut(&mut self) -> Option<&mut QueryPanel> {
+        match &mut self.content {
+            TabContent::Query(p) => Some(p),
+            TabContent::Dashboard => None,
+        }
+    }
 }
 
 // ── TabManager ────────────────────────────────────────────────────────────────
@@ -20,10 +48,12 @@ pub struct TabManager {
     tabs: Vec<Tab>,
     /// Index of the currently visible tab.
     active: usize,
-    /// Index of the tab that is waiting for a DB result.
-    running_tab: Option<usize>,
+    /// conn_id → tab_idx for tabs currently awaiting a DB result.
+    running_tabs: HashMap<usize, usize>,
     next_id: usize,
     next_num: usize,
+    /// The shared dashboard widget (state is shared across all Dashboard tabs).
+    pub dashboard: Dashboard,
 }
 
 impl Default for TabManager {
@@ -32,12 +62,14 @@ impl Default for TabManager {
             tabs: vec![Tab {
                 id: 0,
                 title: "Query 1".to_owned(),
-                panel: QueryPanel::default(),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id: 0,
             }],
             active: 0,
-            running_tab: None,
+            running_tabs: HashMap::new(),
             next_id: 1,
             next_num: 2,
+            dashboard: Dashboard::default(),
         }
     }
 }
@@ -45,17 +77,17 @@ impl Default for TabManager {
 impl TabManager {
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    fn active_panel(&self) -> &QueryPanel {
-        &self.tabs[self.active].panel
+    fn active_panel(&self) -> Option<&QueryPanel> {
+        self.tabs.get(self.active).and_then(|t| t.panel())
     }
 
-    fn active_panel_mut(&mut self) -> &mut QueryPanel {
-        &mut self.tabs[self.active].panel
+    fn active_panel_mut(&mut self) -> Option<&mut QueryPanel> {
+        self.tabs.get_mut(self.active).and_then(|t| t.panel_mut())
     }
 
     // ── Tab lifecycle ─────────────────────────────────────────────────────────
 
-    pub fn new_tab(&mut self) {
+    pub fn new_tab(&mut self, conn_id: usize) {
         let id = self.next_id;
         self.next_id += 1;
         let num = self.next_num;
@@ -63,22 +95,51 @@ impl TabManager {
         self.tabs.push(Tab {
             id,
             title: format!("Query {num}"),
-            panel: QueryPanel::default(),
+            content: TabContent::Query(QueryPanel::default()),
+            conn_id,
         });
         self.active = self.tabs.len() - 1;
+    }
+
+    /// Find existing Dashboard tab or create one; resets dashboard state to trigger reload.
+    pub fn open_or_focus_dashboard(&mut self, conn_id: usize) {
+        // Find existing dashboard tab
+        if let Some(idx) = self.tabs.iter().position(|t| matches!(t.content, TabContent::Dashboard)) {
+            self.active = idx;
+            // Update conn_id in case connection switched
+            self.tabs[idx].conn_id = conn_id;
+        } else {
+            // Create new dashboard tab
+            let id = self.next_id;
+            self.next_id += 1;
+            self.tabs.push(Tab {
+                id,
+                title: "📊 Dashboard".to_owned(),
+                content: TabContent::Dashboard,
+                conn_id,
+            });
+            self.active = self.tabs.len() - 1;
+        }
+        self.dashboard.reset();
     }
 
     pub fn close_tab(&mut self, idx: usize) {
         if self.tabs.len() <= 1 {
             return;
         }
+        let conn_id = self.tabs[idx].conn_id;
         self.tabs.remove(idx);
-        // Keep running_tab index consistent.
-        match self.running_tab {
-            Some(rt) if rt == idx => self.running_tab = None,
-            Some(rt) if rt > idx => self.running_tab = Some(rt - 1),
-            _ => {}
+
+        // Keep running_tabs consistent.
+        // If the closed tab was a running tab, remove it.
+        if let Some(rt) = self.running_tabs.get(&conn_id).copied() {
+            if rt == idx {
+                self.running_tabs.remove(&conn_id);
+            } else if rt > idx {
+                self.running_tabs.insert(conn_id, rt - 1);
+            }
         }
+
         if self.active >= self.tabs.len() {
             self.active = self.tabs.len() - 1;
         }
@@ -96,97 +157,163 @@ impl TabManager {
         }
     }
 
+    // ── Dashboard queries ──────────────────────────────────────────────────────
+
+    pub fn dashboard_needs_load(&self) -> bool {
+        self.dashboard.needs_load()
+    }
+
+    pub fn dashboard_is_active(&self) -> bool {
+        self.tabs.get(self.active).map(|t| matches!(t.content, TabContent::Dashboard)).unwrap_or(false)
+    }
+
+    /// Returns the conn_id of the Dashboard tab if one exists.
+    pub fn dashboard_conn_id(&self) -> Option<usize> {
+        self.tabs.iter().find(|t| matches!(t.content, TabContent::Dashboard)).map(|t| t.conn_id)
+    }
+
+    pub fn set_dashboard_loading(&mut self) {
+        self.dashboard.set_loading();
+    }
+
+    pub fn set_dashboard_data(
+        &mut self,
+        table_stats: Vec<TableStat>,
+        connections: Vec<ConnInfo>,
+        index_stats: Vec<IndexStat>,
+    ) {
+        self.dashboard.set_data(table_stats, connections, index_stats);
+    }
+
     // ── Public API — delegates to active / running tab ────────────────────────
 
     pub fn current_sql(&self) -> &str {
-        self.active_panel().current_sql()
+        self.active_panel().map(|p| p.current_sql()).unwrap_or("")
     }
 
     pub fn set_sql(&mut self, sql: String) {
-        self.active_panel_mut().set_sql(sql);
-    }
-
-    /// Mark the active tab as running and record it as the pending result owner.
-    pub fn set_running(&mut self) {
-        self.running_tab = Some(self.active);
-        self.active_panel_mut().set_running();
-    }
-
-    /// Route a successful query result to the tab that started the query.
-    pub fn set_result(&mut self, result: QueryResult) {
-        let idx = self.running_tab.take().unwrap_or(self.active);
-        if let Some(t) = self.tabs.get_mut(idx) {
-            t.panel.set_result(result);
+        if let Some(p) = self.active_panel_mut() {
+            p.set_sql(sql);
         }
     }
 
-    /// Route a query error to the tab that started the query.
-    pub fn set_error(&mut self, msg: String) {
-        let idx = self.running_tab.take().unwrap_or(self.active);
-        if let Some(t) = self.tabs.get_mut(idx) {
-            t.panel.set_error(msg);
+    /// Returns the conn_id of the currently active tab.
+    pub fn active_tab_conn_id(&self) -> usize {
+        self.tabs.get(self.active).map(|t| t.conn_id).unwrap_or(0)
+    }
+
+    /// Mark the active tab (for the given conn_id) as running.
+    pub fn set_running_for(&mut self, conn_id: usize) {
+        self.running_tabs.insert(conn_id, self.active);
+        if let Some(p) = self.active_panel_mut() {
+            p.set_running();
         }
     }
 
-    /// Broadcast primary-key info to every tab (any tab may browse that table).
+    /// Route a successful query result to the tab that started the query for this conn_id.
+    pub fn set_result_for(&mut self, conn_id: usize, result: QueryResult) {
+        let idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);
+        if let Some(t) = self.tabs.get_mut(idx) {
+            if let Some(p) = t.panel_mut() {
+                p.set_result(result);
+            }
+        }
+    }
+
+    /// Route a query error to the tab that started the query for this conn_id.
+    pub fn set_error_for(&mut self, conn_id: usize, msg: String) {
+        let idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);
+        if let Some(t) = self.tabs.get_mut(idx) {
+            if let Some(p) = t.panel_mut() {
+                p.set_error(msg);
+            }
+        }
+    }
+
+    /// Broadcast primary-key info to every Query tab (any tab may browse that table).
     pub fn set_primary_key(&mut self, schema: &str, table: &str, cols: Vec<String>) {
         for t in &mut self.tabs {
-            t.panel.set_primary_key(schema, table, cols.clone());
+            if let Some(p) = t.panel_mut() {
+                p.set_primary_key(schema, table, cols.clone());
+            }
         }
     }
 
     pub fn set_export_done(&mut self, path: String) {
-        let idx = self.running_tab.unwrap_or(self.active);
+        // Find the running tab, or fall back to active.
+        let idx = self.running_tabs.values().copied().next().unwrap_or(self.active);
         if let Some(t) = self.tabs.get_mut(idx) {
-            t.panel.set_export_done(path);
+            if let Some(p) = t.panel_mut() {
+                p.set_export_done(path);
+            }
         }
     }
 
     /// True if any tab is currently awaiting a DB result.
     pub fn is_running(&self) -> bool {
-        self.running_tab.is_some()
+        !self.running_tabs.is_empty()
     }
 
     pub fn last_query_duration(&self) -> Option<f64> {
-        self.active_panel().last_query_duration()
+        self.active_panel().and_then(|p| p.last_query_duration())
     }
 
     pub fn result_row_count(&self) -> Option<usize> {
-        self.active_panel().result_row_count()
+        self.active_panel().and_then(|p| p.result_row_count())
     }
 
     /// Start browsing `schema.table` in the active tab, updating its title.
-    pub fn start_browse(&mut self, schema: String, table: String, db_tx: &Sender<DbCommand>) {
-        self.tabs[self.active].title = table.clone();
-        self.running_tab = Some(self.active);
-        self.tabs[self.active].panel.start_browse(schema, table, db_tx);
+    pub fn start_browse(
+        &mut self,
+        schema: String,
+        table: String,
+        conn_id: usize,
+        db_tx: &Sender<DbCommand>,
+    ) {
+        let active = self.active;
+        self.tabs[active].title = table.clone();
+        self.tabs[active].conn_id = conn_id;
+        self.running_tabs.insert(conn_id, active);
+        if let Some(p) = self.tabs[active].panel_mut() {
+            p.start_browse(schema, table, db_tx);
+        }
     }
 
-    pub fn update_completion_data(&mut self, tables: Vec<String>, columns: Vec<String>) {
+    pub fn update_completion_data_for(&mut self, conn_id: usize, tables: Vec<String>, columns: Vec<String>) {
         for t in &mut self.tabs {
-            t.panel.set_completion_data(tables.clone(), columns.clone());
+            if t.conn_id == conn_id {
+                if let Some(p) = t.panel_mut() {
+                    p.set_completion_data(tables.clone(), columns.clone());
+                }
+            }
         }
     }
 
     pub fn trigger_export_csv(&mut self, db_tx: &Sender<DbCommand>) {
-        self.active_panel_mut().trigger_export_csv(db_tx);
+        if let Some(p) = self.active_panel_mut() {
+            p.trigger_export_csv(db_tx);
+        }
     }
 
     pub fn trigger_export_json(&mut self, db_tx: &Sender<DbCommand>) {
-        self.active_panel_mut().trigger_export_json(db_tx);
+        if let Some(p) = self.active_panel_mut() {
+            p.trigger_export_json(db_tx);
+        }
     }
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
+    /// `conns` is a slice of (conn_id, db_tx) pairs.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        db_tx: &Sender<DbCommand>,
+        conns: &[(usize, &Sender<DbCommand>)],
         history: &mut QueryHistory,
     ) {
         // ── Keyboard shortcuts ────────────────────────────────────────────────
+        let active_conn_id = self.active_tab_conn_id();
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::T)) {
-            self.new_tab();
+            self.new_tab(active_conn_id);
         }
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::W))
             && self.tabs.len() > 1
@@ -212,16 +339,49 @@ impl TabManager {
             self.close_tab(idx);
         }
         if want_new {
-            self.new_tab();
+            let cid = self.active_tab_conn_id();
+            self.new_tab(cid);
         }
 
         // ── Active panel ──────────────────────────────────────────────────────
-        // Detect if the panel starts a query from within its own show()
-        // (e.g. the user clicks the Run button inside the editor).
-        let was_running = self.tabs[self.active].panel.is_running();
-        self.tabs[self.active].panel.show(ui, db_tx, history);
-        if !was_running && self.tabs[self.active].panel.is_running() {
-            self.running_tab = Some(self.active);
+        let active_idx = self.active;
+        let is_dashboard = matches!(
+            self.tabs.get(active_idx).map(|t| &t.content),
+            Some(TabContent::Dashboard)
+        );
+
+        if is_dashboard {
+            if self.dashboard.show_inline(ui) {
+                // Refresh clicked
+                self.dashboard.set_loading();
+                // Signal to app that dashboard needs reload — the app handles sending the command.
+                // We store the conn_id so app can find it via dashboard_conn_id().
+            }
+        } else if let Some(tab) = self.tabs.get(active_idx) {
+            let tab_conn_id = tab.conn_id;
+            // Find the db_tx for this tab's conn_id
+            let db_tx_opt = conns.iter().find(|(id, _)| *id == tab_conn_id).map(|(_, tx)| *tx);
+
+            if let Some(db_tx) = db_tx_opt {
+                // Detect if the panel starts a query from within its own show()
+                let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                if let Some(p) = self.tabs[active_idx].panel_mut() {
+                    p.show(ui, db_tx, history);
+                }
+                let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                if !was_running && is_running_now {
+                    self.running_tabs.insert(tab_conn_id, active_idx);
+                }
+            } else {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(
+                        egui::RichText::new("Connection not available")
+                            .color(egui::Color32::GRAY)
+                            .italics(),
+                    );
+                });
+            }
         }
     }
 
@@ -238,12 +398,14 @@ impl TabManager {
         let tab_count = self.tabs.len();
 
         // Pre-compute display data (including stable id) to avoid capturing `self` in closures.
-        let tab_data: Vec<(usize, usize, String, bool, bool)> = self
+        let tab_data: Vec<(usize, usize, String, bool, bool, bool)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                (i, t.id, t.title.clone(), i == self.active, self.running_tab == Some(i))
+                let is_running = self.running_tabs.values().any(|&rt| rt == i);
+                let is_dashboard = matches!(t.content, TabContent::Dashboard);
+                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard)
             })
             .collect();
 
@@ -253,7 +415,7 @@ impl TabManager {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
 
-            for (i, tab_id, title, is_active, is_running) in &tab_data {
+            for (i, tab_id, title, is_active, is_running, is_dashboard) in &tab_data {
                 // Truncate long titles.
                 let short: String = truncate(title, 24);
                 let display = if *is_running {
@@ -307,7 +469,15 @@ impl TabManager {
                                 to_select = Some(*i);
                             }
 
-                            if tab_count > 1 {
+                            // Dashboard tab: no close button if it's the only tab.
+                            // Query tabs: show close button if there are multiple tabs.
+                            let can_close = if *is_dashboard {
+                                tab_count > 1
+                            } else {
+                                tab_count > 1
+                            };
+
+                            if can_close {
                                 let xr = ui.add(
                                     egui::Button::new(
                                         RichText::new("×")

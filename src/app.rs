@@ -6,7 +6,6 @@ use crate::{
     history::QueryHistory,
     ui::{
         connection_dialog::ConnectionDialog,
-        dashboard::Dashboard,
         join_builder::{JoinAction, JoinBuilder},
         sidebar::{Sidebar, SidebarAction},
         tab_manager::TabManager,
@@ -14,31 +13,39 @@ use crate::{
     },
 };
 
-pub struct PgClientApp {
-    // DB communication channels
+// ── Per-connection state ───────────────────────────────────────────────────────
+
+pub struct ConnState {
+    pub id: usize,
+    pub name: String,
     pub db_tx: Sender<DbCommand>,
     pub db_rx: Receiver<DbEvent>,
+    pub sidebar: Sidebar,
+    pub status: ConnectionStatus,
+    pub pending_ddl_schema: Option<String>,
+    pub pending_edit_table: Option<(String, String)>,
+}
+
+// ── App ────────────────────────────────────────────────────────────────────────
+
+pub struct PgClientApp {
+    // Multiple connections
+    pub connections: Vec<ConnState>,
+    pub active_conn: usize,
+    pub next_conn_id: usize,
 
     // UI panels
-    pub sidebar: Sidebar,
     pub tab_manager: TabManager,
     pub connection_dialog: ConnectionDialog,
 
     // Dialogs
     pub table_dialog: TableDialog,
     pub join_builder: JoinBuilder,
-    pub dashboard: Dashboard,
 
     // App state
     pub config: AppConfig,
     pub history: QueryHistory,
-    pub status: ConnectionStatus,
     pub show_connection_dialog: bool,
-    pub active_profile_idx: Option<usize>,
-    /// Schema to reload after a DDL command succeeds.
-    pub pending_ddl_schema: Option<String>,
-    /// (schema, table) for which we're awaiting LoadDetails before opening Edit Table dialog.
-    pub pending_edit_table: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,93 +66,166 @@ impl PgClientApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_style(&cc.egui_ctx);
 
-        let (cmd_tx, cmd_rx) = mpsc::channel::<DbCommand>();
-        let (evt_tx, evt_rx) = mpsc::channel::<DbEvent>();
-
-        // Spawn DB worker thread
-        DbHandle::spawn(cmd_rx, evt_tx);
-
         let config = AppConfig::load().unwrap_or_default();
         let history = QueryHistory::load().unwrap_or_default();
 
         Self {
-            db_tx: cmd_tx,
-            db_rx: evt_rx,
-            sidebar: Sidebar::default(),
+            connections: Vec::new(),
+            active_conn: 0,
+            next_conn_id: 0,
             tab_manager: TabManager::default(),
             connection_dialog: ConnectionDialog::default(),
             table_dialog: TableDialog::default(),
             join_builder: JoinBuilder::default(),
-            dashboard: Dashboard::default(),
             config,
             history,
-            status: ConnectionStatus::Disconnected,
-            show_connection_dialog: false,
-            active_profile_idx: None,
-            pending_ddl_schema: None,
-            pending_edit_table: None,
+            show_connection_dialog: true,
         }
     }
 
-    /// Process all pending DB events from the background thread.
+    /// Create a new ConnState and DB worker for a saved profile, then push it.
+    pub fn connect_to_profile(&mut self, idx: usize) {
+        if let Some(profile) = self.config.connections.get(idx).cloned() {
+            let (cmd_tx, cmd_rx) = mpsc::channel::<DbCommand>();
+            let (evt_tx, evt_rx) = mpsc::channel::<DbEvent>();
+            DbHandle::spawn(cmd_rx, evt_tx);
+
+            let conn_id = self.next_conn_id;
+            self.next_conn_id += 1;
+
+            let _ = cmd_tx.send(DbCommand::Connect(profile.clone()));
+
+            let name = format!("{}@{}", profile.database, profile.host);
+            self.connections.push(ConnState {
+                id: conn_id,
+                name,
+                db_tx: cmd_tx,
+                db_rx: evt_rx,
+                sidebar: Sidebar::default(),
+                status: ConnectionStatus::Connecting,
+                pending_ddl_schema: None,
+                pending_edit_table: None,
+            });
+            self.active_conn = self.connections.len() - 1;
+
+            // Update the active tab to use this connection, or create a new tab.
+            if self.tab_manager.active_tab_conn_id() != conn_id {
+                // If there's already content in the active tab, create a new tab.
+                self.tab_manager.new_tab(conn_id);
+            }
+        }
+    }
+
+    /// Connect using a raw profile (from the connection dialog), not from saved config.
+    fn connect_with_profile(&mut self, profile: crate::config::ConnectionProfile) {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<DbCommand>();
+        let (evt_tx, evt_rx) = mpsc::channel::<DbEvent>();
+        DbHandle::spawn(cmd_rx, evt_tx);
+
+        let conn_id = self.next_conn_id;
+        self.next_conn_id += 1;
+
+        let _ = cmd_tx.send(DbCommand::Connect(profile.clone()));
+
+        let name = format!("{}@{}", profile.database, profile.host);
+        self.connections.push(ConnState {
+            id: conn_id,
+            name,
+            db_tx: cmd_tx,
+            db_rx: evt_rx,
+            sidebar: Sidebar::default(),
+            status: ConnectionStatus::Connecting,
+            pending_ddl_schema: None,
+            pending_edit_table: None,
+        });
+        self.active_conn = self.connections.len() - 1;
+
+        // Give the new connection a tab.
+        self.tab_manager.new_tab(conn_id);
+    }
+
+    /// Process all pending DB events from all background threads.
     fn process_db_events(&mut self) {
-        while let Ok(event) = self.db_rx.try_recv() {
-            match event {
-                DbEvent::Connected { host, database } => {
-                    self.status = ConnectionStatus::Connected {
-                        host: host.clone(),
-                        database: database.clone(),
-                    };
-                    // Trigger schema load
-                    let _ = self.db_tx.send(DbCommand::LoadSchemas);
+        for i in 0..self.connections.len() {
+            // Collect events without holding a mutable borrow on the whole Vec.
+            let events: Vec<DbEvent> = {
+                let conn = &self.connections[i];
+                let mut evts = Vec::new();
+                while let Ok(e) = conn.db_rx.try_recv() {
+                    evts.push(e);
                 }
-                DbEvent::ConnectionError(msg) => {
-                    self.status = ConnectionStatus::Error(msg);
-                }
-                DbEvent::Disconnected => {
-                    self.status = ConnectionStatus::Disconnected;
-                    self.sidebar.clear();
-                }
-                DbEvent::Schemas(schemas) => {
-                    self.sidebar.set_schemas(schemas);
-                }
-                DbEvent::Tables { schema, tables } => {
-                    self.sidebar.set_tables(&schema, tables);
-                }
-                DbEvent::TableDetails { schema, table, columns, indexes, foreign_keys } => {
-                    self.sidebar.set_table_details(
-                        &schema,
-                        &table,
-                        columns.clone(),
-                        indexes,
-                        foreign_keys,
-                    );
-                    // If we were waiting for these details to open the Edit Table dialog, do it now.
-                    if self.pending_edit_table == Some((schema.clone(), table.clone())) {
-                        self.pending_edit_table = None;
-                        let schemas = self.sidebar.schema_names();
-                        self.table_dialog.open_edit(schema, table, columns, schemas);
+                evts
+            };
+
+            let conn_id = self.connections[i].id;
+
+            for event in events {
+                match event {
+                    DbEvent::Connected { host, database } => {
+                        self.connections[i].status = ConnectionStatus::Connected {
+                            host: host.clone(),
+                            database: database.clone(),
+                        };
+                        self.connections[i].name = format!("{database}@{host}");
+                        let _ = self.connections[i].db_tx.send(DbCommand::LoadSchemas);
                     }
-                }
-                DbEvent::PrimaryKey { schema, table, columns } => {
-                    self.tab_manager.set_primary_key(&schema, &table, columns);
-                }
-                DbEvent::QueryResult(result) => {
-                    self.tab_manager.set_result(result);
-                }
-                DbEvent::QueryError(msg) => {
-                    self.tab_manager.set_error(msg);
-                }
-                DbEvent::ExportDone(path) => {
-                    self.tab_manager.set_export_done(path);
-                }
-                DbEvent::DdlDone => {
-                    if let Some(schema) = self.pending_ddl_schema.take() {
-                        let _ = self.db_tx.send(DbCommand::LoadTables { schema });
+                    DbEvent::ConnectionError(msg) => {
+                        self.connections[i].status = ConnectionStatus::Error(msg);
                     }
-                }
-                DbEvent::DashboardData { table_stats, connections, index_stats } => {
-                    self.dashboard.set_data(table_stats, connections, index_stats);
+                    DbEvent::Disconnected => {
+                        self.connections[i].status = ConnectionStatus::Disconnected;
+                        self.connections[i].sidebar.clear();
+                    }
+                    DbEvent::Schemas(schemas) => {
+                        self.connections[i].sidebar.set_schemas(schemas);
+                    }
+                    DbEvent::Tables { schema, tables } => {
+                        self.connections[i].sidebar.set_tables(&schema, tables);
+                    }
+                    DbEvent::TableDetails { schema, table, columns, indexes, foreign_keys } => {
+                        self.connections[i].sidebar.set_table_details(
+                            &schema,
+                            &table,
+                            columns.clone(),
+                            indexes,
+                            foreign_keys,
+                        );
+                        if self.connections[i].pending_edit_table
+                            == Some((schema.clone(), table.clone()))
+                        {
+                            self.connections[i].pending_edit_table = None;
+                            let schemas = self.connections[i].sidebar.schema_names();
+                            self.table_dialog.open_edit(schema, table, columns, schemas);
+                        }
+                    }
+                    DbEvent::PrimaryKey { schema, table, columns } => {
+                        self.tab_manager.set_primary_key(&schema, &table, columns);
+                    }
+                    DbEvent::QueryResult(result) => {
+                        self.tab_manager.set_result_for(conn_id, result);
+                    }
+                    DbEvent::QueryError(msg) => {
+                        self.tab_manager.set_error_for(conn_id, msg);
+                    }
+                    DbEvent::ExportDone(path) => {
+                        self.tab_manager.set_export_done(path);
+                    }
+                    DbEvent::DdlDone => {
+                        if let Some(schema) = self.connections[i].pending_ddl_schema.take() {
+                            let _ = self.connections[i]
+                                .db_tx
+                                .send(DbCommand::LoadTables { schema });
+                        }
+                    }
+                    DbEvent::DashboardData { table_stats, connections, index_stats } => {
+                        if self.tab_manager.dashboard_conn_id() == Some(conn_id) {
+                            self.tab_manager.set_dashboard_data(
+                                table_stats,
+                                connections,
+                                index_stats,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -171,7 +251,9 @@ impl PgClientApp {
                 }
                 ui.separator();
                 if ui.button("Disconnect").clicked() {
-                    let _ = self.db_tx.send(DbCommand::Disconnect);
+                    if let Some(conn) = self.connections.get(self.active_conn) {
+                        let _ = conn.db_tx.send(DbCommand::Disconnect);
+                    }
                     ui.close_menu();
                 }
             });
@@ -181,8 +263,13 @@ impl PgClientApp {
                     self.join_builder.open();
                     ui.close_menu();
                 }
-                if ui.button("Dashboard…").clicked() {
-                    self.dashboard.open();
+                if ui.button("📊 Dashboard").clicked() {
+                    let active_conn_id = self
+                        .connections
+                        .get(self.active_conn)
+                        .map(|c| c.id)
+                        .unwrap_or(0);
+                    self.tab_manager.open_or_focus_dashboard(active_conn_id);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -191,16 +278,24 @@ impl PgClientApp {
                     ui.close_menu();
                 }
                 if ui.button("Cancel (Ctrl+C)").clicked() {
-                    let _ = self.db_tx.send(DbCommand::CancelQuery);
+                    if let Some(conn) = self.connections.get(self.active_conn) {
+                        let _ = conn.db_tx.send(DbCommand::CancelQuery);
+                    }
                     ui.close_menu();
                 }
                 ui.separator();
                 if ui.button("Export as CSV…").clicked() {
-                    self.tab_manager.trigger_export_csv(&self.db_tx);
+                    let active_conn_id = self.tab_manager.active_tab_conn_id();
+                    if let Some(conn) = self.connections.iter().find(|c| c.id == active_conn_id) {
+                        self.tab_manager.trigger_export_csv(&conn.db_tx);
+                    }
                     ui.close_menu();
                 }
                 if ui.button("Export as JSON…").clicked() {
-                    self.tab_manager.trigger_export_json(&self.db_tx);
+                    let active_conn_id = self.tab_manager.active_tab_conn_id();
+                    if let Some(conn) = self.connections.iter().find(|c| c.id == active_conn_id) {
+                        self.tab_manager.trigger_export_json(&conn.db_tx);
+                    }
                     ui.close_menu();
                 }
             });
@@ -210,7 +305,13 @@ impl PgClientApp {
     fn render_status_bar(&self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                match &self.status {
+                let status = self
+                    .connections
+                    .get(self.active_conn)
+                    .map(|c| &c.status)
+                    .unwrap_or(&ConnectionStatus::Disconnected);
+
+                match status {
                     ConnectionStatus::Disconnected => {
                         ui.colored_label(egui::Color32::GRAY, "⬤  Disconnected");
                     }
@@ -240,14 +341,6 @@ impl PgClientApp {
         });
     }
 
-    fn connect_to_profile(&mut self, idx: usize) {
-        if let Some(profile) = self.config.connections.get(idx).cloned() {
-            self.active_profile_idx = Some(idx);
-            self.status = ConnectionStatus::Connecting;
-            let _ = self.db_tx.send(DbCommand::Connect(profile));
-        }
-    }
-
     fn execute_query(&mut self) {
         let sql = self.tab_manager.current_sql().to_owned();
         if sql.trim().is_empty() {
@@ -255,8 +348,54 @@ impl PgClientApp {
         }
         self.history.push(sql.clone());
         let _ = self.history.save();
-        self.tab_manager.set_running();
-        let _ = self.db_tx.send(DbCommand::Execute(sql));
+        let conn_id = self.tab_manager.active_tab_conn_id();
+        self.tab_manager.set_running_for(conn_id);
+        if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+            let _ = conn.db_tx.send(DbCommand::Execute(sql));
+        } else {
+            self.tab_manager.set_error_for(conn_id, "Not connected".into());
+        }
+    }
+
+    fn render_connection_switcher(&mut self, ui: &mut egui::Ui) {
+        // Collect display data to avoid borrow issues
+        let data: Vec<(usize, String, bool)> = self
+            .connections
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let dot = match &c.status {
+                    ConnectionStatus::Connected { .. } => "🟢",
+                    ConnectionStatus::Connecting => "🟡",
+                    ConnectionStatus::Error(_) => "🔴",
+                    ConnectionStatus::Disconnected => "⚫",
+                };
+                (i, format!("{} {}", dot, c.name), i == self.active_conn)
+            })
+            .collect();
+
+        let mut new_active = self.active_conn;
+        let mut open_dialog = false;
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (i, label, is_active) in &data {
+                if ui.selectable_label(*is_active, label.as_str()).clicked() {
+                    new_active = *i;
+                }
+            }
+            if ui.small_button("＋").on_hover_text("New connection").clicked() {
+                open_dialog = true;
+            }
+        });
+
+        if new_active != self.active_conn {
+            self.active_conn = new_active;
+        }
+        if open_dialog {
+            self.show_connection_dialog = true;
+            self.connection_dialog.reset();
+        }
     }
 }
 
@@ -264,29 +403,35 @@ impl eframe::App for PgClientApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_db_events();
 
-        // Update window title with active DB name.
-        let title = match &self.status {
-            ConnectionStatus::Connected { database, host } => {
-                format!("pgclient — {database} @ {host}")
-            }
-            ConnectionStatus::Connecting => "pgclient — connecting…".to_owned(),
-            _ => "pgclient".to_owned(),
-        };
+        // Update window title with active connection's status.
+        let title = self
+            .connections
+            .get(self.active_conn)
+            .map(|c| match &c.status {
+                ConnectionStatus::Connected { database, host } => {
+                    format!("pgclient — {database} @ {host}")
+                }
+                ConnectionStatus::Connecting => "pgclient — connecting…".to_owned(),
+                _ => "pgclient".to_owned(),
+            })
+            .unwrap_or_else(|| "pgclient".to_owned());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        // Update autocomplete completion data each frame
-        let (comp_tables, comp_columns) = self.sidebar.completion_data();
-        self.tab_manager.update_completion_data(comp_tables, comp_columns);
+        // Update autocomplete completion data for each connection.
+        for conn in &self.connections {
+            let (tables, columns) = conn.sidebar.completion_data();
+            let conn_id = conn.id;
+            self.tab_manager.update_completion_data_for(conn_id, tables, columns);
+        }
 
         // Dashboard load / refresh logic
-        if self.dashboard.needs_load() {
-            self.dashboard.set_loading();
-            let _ = self.db_tx.send(DbCommand::LoadDashboard);
-        }
-        if self.dashboard.show(ctx) {
-            // Refresh button clicked
-            self.dashboard.set_loading();
-            let _ = self.db_tx.send(DbCommand::LoadDashboard);
+        if self.tab_manager.dashboard_is_active() && self.tab_manager.dashboard_needs_load() {
+            if let Some(conn_id) = self.tab_manager.dashboard_conn_id() {
+                if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+                    let _ = conn.db_tx.send(DbCommand::LoadDashboard);
+                    self.tab_manager.set_dashboard_loading();
+                }
+            }
         }
 
         let should_execute = ctx.input(|i| {
@@ -299,7 +444,9 @@ impl eframe::App for PgClientApp {
 
         let should_cancel = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C));
         if should_cancel {
-            let _ = self.db_tx.send(DbCommand::CancelQuery);
+            if let Some(conn) = self.connections.get(self.active_conn) {
+                let _ = conn.db_tx.send(DbCommand::CancelQuery);
+            }
         }
 
         // Top menu bar
@@ -310,44 +457,86 @@ impl eframe::App for PgClientApp {
         // Status bar at bottom
         self.render_status_bar(ctx);
 
-        // Left sidebar — schema browser
+        // Left sidebar — connection switcher + schema browser
         egui::SidePanel::left("sidebar")
             .resizable(true)
             .min_width(180.0)
             .default_width(220.0)
             .show(ctx, |ui| {
-                for action in self.sidebar.show(ui) {
+                // Connection switcher at top
+                if !self.connections.is_empty() {
+                    self.render_connection_switcher(ui);
+                    ui.separator();
+                }
+
+                let active_conn_id = self.connections.get(self.active_conn).map(|c| c.id);
+
+                let actions = if let Some(conn) = self.connections.get_mut(self.active_conn) {
+                    conn.sidebar.show(ui)
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(egui::RichText::new("No connection").color(egui::Color32::GRAY));
+                        if ui.button("Connect…").clicked() {
+                            self.show_connection_dialog = true;
+                            self.connection_dialog.reset();
+                        }
+                    });
+                    vec![]
+                };
+
+                for action in actions {
+                    let conn_id = active_conn_id.unwrap_or(0);
                     match action {
                         SidebarAction::LoadTables(schema) => {
-                            let _ = self.db_tx.send(DbCommand::LoadTables { schema });
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let _ = conn.db_tx.send(DbCommand::LoadTables { schema });
+                            }
                         }
                         SidebarAction::LoadDetails { schema, table } => {
-                            let _ = self.db_tx.send(DbCommand::LoadDetails { schema, table });
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let _ = conn.db_tx.send(DbCommand::LoadDetails { schema, table });
+                            }
                         }
                         SidebarAction::BrowseTable { schema, table } => {
-                            self.tab_manager.start_browse(schema, table, &self.db_tx);
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let db_tx = conn.db_tx.clone();
+                                self.tab_manager.start_browse(schema, table, conn_id, &db_tx);
+                            }
                         }
                         SidebarAction::RunSql(sql) => {
                             self.tab_manager.set_sql(sql);
                             self.execute_query();
                         }
                         SidebarAction::NewTable { schema } => {
-                            let schemas = self.sidebar.schema_names();
-                            self.table_dialog.open_new(schema, schemas);
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let schemas = conn.sidebar.schema_names();
+                                self.table_dialog.open_new(schema, schemas);
+                            }
                         }
                         SidebarAction::EditTable { schema, table } => {
-                            // Try the details cache first; otherwise request a load.
                             let cached = self
-                                .sidebar
-                                .get_table_details(&schema, &table)
-                                .filter(|d| d.loaded)
-                                .map(|d| d.columns.clone());
+                                .connections
+                                .get(self.active_conn)
+                                .and_then(|conn| {
+                                    conn.sidebar
+                                        .get_table_details(&schema, &table)
+                                        .filter(|d| d.loaded)
+                                        .map(|d| d.columns.clone())
+                                });
                             if let Some(columns) = cached {
-                                let schemas = self.sidebar.schema_names();
-                                self.table_dialog.open_edit(schema, table, columns, schemas);
+                                if let Some(conn) = self.connections.get(self.active_conn) {
+                                    let schemas = conn.sidebar.schema_names();
+                                    self.table_dialog.open_edit(schema, table, columns, schemas);
+                                }
                             } else {
-                                self.pending_edit_table = Some((schema.clone(), table.clone()));
-                                let _ = self.db_tx.send(DbCommand::LoadDetails { schema, table });
+                                if let Some(conn) = self.connections.get_mut(self.active_conn) {
+                                    conn.pending_edit_table =
+                                        Some((schema.clone(), table.clone()));
+                                    let _ = conn
+                                        .db_tx
+                                        .send(DbCommand::LoadDetails { schema, table });
+                                }
                             }
                         }
                     }
@@ -356,11 +545,34 @@ impl eframe::App for PgClientApp {
 
         // Central panel — query editor + results (with tab bar)
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.tab_manager.show(ui, &self.db_tx, &mut self.history);
+            // Build the list of (conn_id, &db_tx) for tab_manager.show()
+            let conn_refs: Vec<(usize, &Sender<DbCommand>)> = self
+                .connections
+                .iter()
+                .map(|c| (c.id, &c.db_tx))
+                .collect();
+            self.tab_manager.show(ui, &conn_refs, &mut self.history);
         });
 
+        // Dashboard refresh: if show_inline returned true (refresh button), reload
+        // This is handled inside tab_manager.show() → dashboard.show_inline() which returns bool,
+        // but we need to detect it here. We check again after show():
+        if self.tab_manager.dashboard_is_active() && self.tab_manager.dashboard_needs_load() {
+            if let Some(conn_id) = self.tab_manager.dashboard_conn_id() {
+                if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+                    let _ = conn.db_tx.send(DbCommand::LoadDashboard);
+                    self.tab_manager.set_dashboard_loading();
+                }
+            }
+        }
+
         // Join Builder dialog
-        self.join_builder.update_available(self.sidebar.all_tables_with_columns());
+        let jb_tables = self
+            .connections
+            .get(self.active_conn)
+            .map(|c| c.sidebar.all_tables_with_columns())
+            .unwrap_or_default();
+        self.join_builder.update_available(jb_tables);
         for action in self.join_builder.show(ctx) {
             match action {
                 JoinAction::Run(sql) => {
@@ -371,7 +583,9 @@ impl eframe::App for PgClientApp {
                     self.tab_manager.set_sql(sql);
                 }
                 JoinAction::LoadDetails { schema, table } => {
-                    let _ = self.db_tx.send(DbCommand::LoadDetails { schema, table });
+                    if let Some(conn) = self.connections.get(self.active_conn) {
+                        let _ = conn.db_tx.send(DbCommand::LoadDetails { schema, table });
+                    }
                 }
             }
         }
@@ -380,8 +594,10 @@ impl eframe::App for PgClientApp {
         if let Some(action) = self.table_dialog.show(ctx) {
             match action {
                 TableDialogAction::ExecuteDdl { sql, refresh_schema } => {
-                    self.pending_ddl_schema = Some(refresh_schema);
-                    let _ = self.db_tx.send(DbCommand::ExecuteDdl(sql));
+                    if let Some(conn) = self.connections.get_mut(self.active_conn) {
+                        conn.pending_ddl_schema = Some(refresh_schema);
+                        let _ = conn.db_tx.send(DbCommand::ExecuteDdl(sql));
+                    }
                 }
             }
         }
@@ -401,8 +617,7 @@ impl eframe::App for PgClientApp {
                             self.config.connections.push(profile.clone());
                             let _ = self.config.save();
                         }
-                        self.status = ConnectionStatus::Connecting;
-                        let _ = self.db_tx.send(DbCommand::Connect(profile));
+                        self.connect_with_profile(profile);
                         self.show_connection_dialog = false;
                     }
                 });
@@ -412,9 +627,10 @@ impl eframe::App for PgClientApp {
         }
 
         // Request repaint while connecting or query running to show spinner
-        if matches!(self.status, ConnectionStatus::Connecting)
-            || self.tab_manager.is_running()
-        {
+        let any_connecting = self.connections.iter().any(|c| {
+            matches!(c.status, ConnectionStatus::Connecting)
+        });
+        if any_connecting || self.tab_manager.is_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }

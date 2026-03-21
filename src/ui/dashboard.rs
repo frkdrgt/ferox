@@ -1,4 +1,3 @@
-use egui::Context;
 use egui_extras::{Column, TableBuilder};
 
 use crate::db::metadata::{ConnInfo, IndexStat, TableStat};
@@ -25,7 +24,6 @@ enum DashTab {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 pub struct Dashboard {
-    pub open: bool,
     state: DashboardState,
     active_tab: DashTab,
 }
@@ -33,7 +31,6 @@ pub struct Dashboard {
 impl Default for Dashboard {
     fn default() -> Self {
         Self {
-            open: false,
             state: DashboardState::Empty,
             active_tab: DashTab::TableSizes,
         }
@@ -41,8 +38,8 @@ impl Default for Dashboard {
 }
 
 impl Dashboard {
-    pub fn open(&mut self) {
-        self.open = true;
+    /// Reset state back to Empty so that it triggers a reload.
+    pub fn reset(&mut self) {
         self.state = DashboardState::Empty;
     }
 
@@ -59,77 +56,63 @@ impl Dashboard {
         self.state = DashboardState::Loaded { table_stats, connections, index_stats };
     }
 
+    /// Returns true when the dashboard needs to load data (state is Empty).
     pub fn needs_load(&self) -> bool {
-        self.open && matches!(self.state, DashboardState::Empty)
+        matches!(self.state, DashboardState::Empty)
     }
 
-    /// Render the dashboard window. Returns `true` when the Refresh button is clicked.
-    pub fn show(&mut self, ctx: &Context) -> bool {
-        if !self.open {
-            return false;
-        }
-
+    /// Render the dashboard content inline (no Window wrapper).
+    /// Returns true when the Refresh button is clicked.
+    pub fn show_inline(&mut self, ui: &mut egui::Ui) -> bool {
         let mut refresh_clicked = false;
-        let mut still_open = true;
 
-        egui::Window::new("Database Dashboard")
-            .open(&mut still_open)
-            .resizable(true)
-            .min_size([800.0, 500.0])
-            .default_size([900.0, 600.0])
-            .show(ctx, |ui| {
-                // Toolbar
-                ui.horizontal(|ui| {
-                    if ui.button("↺ Refresh").clicked() {
-                        refresh_clicked = true;
-                    }
-                    ui.separator();
+        // Toolbar
+        ui.horizontal(|ui| {
+            if ui.button("↺ Refresh").clicked() {
+                refresh_clicked = true;
+            }
+            ui.separator();
 
-                    ui.selectable_value(&mut self.active_tab, DashTab::TableSizes, "Table Sizes");
-                    ui.selectable_value(&mut self.active_tab, DashTab::Connections, "Connections");
-                    ui.selectable_value(&mut self.active_tab, DashTab::IndexStats, "Index Stats");
+            ui.selectable_value(&mut self.active_tab, DashTab::TableSizes, "Table Sizes");
+            ui.selectable_value(&mut self.active_tab, DashTab::Connections, "Connections");
+            ui.selectable_value(&mut self.active_tab, DashTab::IndexStats, "Index Stats");
+        });
+
+        ui.separator();
+
+        match &self.state {
+            DashboardState::Empty => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(
+                        egui::RichText::new("Loading…")
+                            .color(egui::Color32::GRAY)
+                            .italics(),
+                    );
                 });
-
-                ui.separator();
-
-                match &self.state {
-                    DashboardState::Empty => {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(40.0);
-                            ui.label(
-                                egui::RichText::new("Loading…")
-                                    .color(egui::Color32::GRAY)
-                                    .italics(),
-                            );
-                        });
+            }
+            DashboardState::Loading => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading dashboard data…");
+                    });
+                });
+            }
+            DashboardState::Loaded { table_stats, connections, index_stats } => {
+                match self.active_tab {
+                    DashTab::TableSizes => {
+                        show_table_sizes(ui, table_stats);
                     }
-                    DashboardState::Loading => {
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(40.0);
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Loading dashboard data…");
-                            });
-                        });
+                    DashTab::Connections => {
+                        show_connections(ui, connections);
                     }
-                    DashboardState::Loaded { table_stats, connections, index_stats } => {
-                        match self.active_tab {
-                            DashTab::TableSizes => {
-                                show_table_sizes(ui, table_stats);
-                            }
-                            DashTab::Connections => {
-                                show_connections(ui, connections);
-                            }
-                            DashTab::IndexStats => {
-                                show_index_stats(ui, index_stats);
-                            }
-                        }
+                    DashTab::IndexStats => {
+                        show_index_stats(ui, index_stats);
                     }
                 }
-            });
-
-        if !still_open {
-            self.open = false;
+            }
         }
 
         refresh_clicked
