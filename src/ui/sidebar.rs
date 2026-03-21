@@ -11,10 +11,143 @@ pub enum SidebarAction {
     LoadTables(String),
     LoadDetails { schema: String, table: String },
     BrowseTable { schema: String, table: String },
+    /// Paste SQL into the active editor without executing.
+    SetSql(String),
     RunSql(String),
     NewTable { schema: String },
     EditTable { schema: String, table: String },
     ViewErDiagram { schema: String },
+}
+
+// ── Script generation helpers ─────────────────────────────────────────────────
+
+fn placeholder(data_type: &str) -> &'static str {
+    let t = data_type.to_lowercase();
+    if t.contains("int") || t.contains("serial") || t.contains("numeric")
+        || t.contains("float") || t.contains("double") || t.contains("decimal")
+        || t.contains("real") || t.contains("money")
+    {
+        "0"
+    } else if t.contains("bool") {
+        "false"
+    } else if t.contains("timestamp") || t.contains("date") || t.contains("time") {
+        "NOW()"
+    } else if t.contains("uuid") {
+        "gen_random_uuid()"
+    } else if t.contains("json") {
+        "'{}'::jsonb"
+    } else {
+        "''"
+    }
+}
+
+fn pk_from_indexes(indexes: &[IndexInfo]) -> Vec<String> {
+    indexes
+        .iter()
+        .find(|i| i.name.ends_with("_pkey") || i.name.to_lowercase().contains("primary"))
+        .and_then(|i| {
+            let start = i.definition.rfind('(')?;
+            let end = i.definition.rfind(')')?;
+            if end > start {
+                Some(
+                    i.definition[start + 1..end]
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn script_select(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+    if cols.is_empty() {
+        return format!("SELECT *\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;");
+    }
+    let col_list = cols
+        .iter()
+        .map(|c| format!("    \"{}\"", c.name))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("SELECT\n{col_list}\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;")
+}
+
+fn script_insert(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+    let insertable: Vec<&ColumnInfo> = cols
+        .iter()
+        .filter(|c| {
+            !c.column_default
+                .as_deref()
+                .map(|d| d.contains("nextval"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if insertable.is_empty() {
+        return format!("INSERT INTO \"{schema}\".\"{table}\" DEFAULT VALUES;");
+    }
+    let col_list = insertable
+        .iter()
+        .map(|c| format!("    \"{}\"", c.name))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let val_list = insertable
+        .iter()
+        .map(|c| {
+            format!(
+                "    {}  -- {}: {}",
+                placeholder(&c.data_type),
+                c.name,
+                c.data_type
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("INSERT INTO \"{schema}\".\"{table}\" (\n{col_list}\n) VALUES (\n{val_list}\n);")
+}
+
+fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+    let pk_set: std::collections::HashSet<&str> = pk.iter().map(|s| s.as_str()).collect();
+    let set_cols: Vec<&ColumnInfo> = cols.iter().filter(|c| !pk_set.contains(c.name.as_str())).collect();
+    let set_clause = if set_cols.is_empty() {
+        "    -- no non-PK columns to update".to_owned()
+    } else {
+        set_cols
+            .iter()
+            .map(|c| format!("    \"{}\" = {}  -- {}", c.name, placeholder(&c.data_type), c.data_type))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    };
+    let where_clause = if pk.is_empty() {
+        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+    } else {
+        pk.iter()
+            .map(|p| {
+                let dt = cols.iter().find(|c| &c.name == p).map(|c| c.data_type.as_str()).unwrap_or("?");
+                format!("    \"{}\" = {}  -- {}", p, placeholder(dt), dt)
+            })
+            .collect::<Vec<_>>()
+            .join("\n    AND ")
+    };
+    format!("UPDATE \"{schema}\".\"{table}\"\nSET\n{set_clause}\nWHERE\n{where_clause};")
+}
+
+fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+    let where_clause = if pk.is_empty() {
+        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+    } else {
+        pk.iter()
+            .map(|p| {
+                let dt = cols.iter().find(|c| &c.name == p).map(|c| c.data_type.as_str()).unwrap_or("?");
+                format!("    \"{}\" = {}  -- {}", p, placeholder(dt), dt)
+            })
+            .collect::<Vec<_>>()
+            .join("\n    AND ")
+    };
+    format!(
+        "-- ⚠️ Review WHERE clause carefully before running\nDELETE FROM \"{schema}\".\"{table}\"\nWHERE\n{where_clause};"
+    )
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -410,6 +543,7 @@ impl Sidebar {
                                         );
                                     });
                                 });
+                                let details_for_menu = details.clone();
                                 resp.context_menu(|ui| {
                                     ui.label(
                                         RichText::new(format!("{schema_name}.{table_name}"))
@@ -417,6 +551,42 @@ impl Sidebar {
                                             .small(),
                                     );
                                     ui.separator();
+
+                                    // ── Script generation ─────────────────
+                                    ui.menu_button("📄  Generate Script", |ui| {
+                                        let (cols, pk) = details_for_menu
+                                            .as_ref()
+                                            .filter(|d| d.loaded)
+                                            .map(|d| (d.columns.as_slice(), pk_from_indexes(&d.indexes)))
+                                            .unwrap_or((&[], vec![]));
+
+                                        if ui.button("SELECT").clicked() {
+                                            actions.push(SidebarAction::SetSql(
+                                                script_select(&schema_name, &table_name, cols),
+                                            ));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("INSERT").clicked() {
+                                            actions.push(SidebarAction::SetSql(
+                                                script_insert(&schema_name, &table_name, cols),
+                                            ));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("UPDATE").clicked() {
+                                            actions.push(SidebarAction::SetSql(
+                                                script_update(&schema_name, &table_name, cols, &pk),
+                                            ));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("DELETE").clicked() {
+                                            actions.push(SidebarAction::SetSql(
+                                                script_delete(&schema_name, &table_name, cols, &pk),
+                                            ));
+                                            ui.close_menu();
+                                        }
+                                    });
+                                    ui.separator();
+
                                     if ui.button("▶  Browse rows").clicked() {
                                         actions.push(SidebarAction::BrowseTable {
                                             schema: schema_name.clone(),

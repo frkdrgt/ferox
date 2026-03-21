@@ -24,6 +24,8 @@ pub struct ConnState {
     pub status: ConnectionStatus,
     pub pending_ddl_schema: Option<String>,
     pub pending_edit_table: Option<(String, String)>,
+    /// True while a safe-mode BEGIN transaction is open on this connection.
+    pub in_transaction: bool,
 }
 
 // ── App ────────────────────────────────────────────────────────────────────────
@@ -46,6 +48,8 @@ pub struct PgClientApp {
     pub config: AppConfig,
     pub history: QueryHistory,
     pub show_connection_dialog: bool,
+    /// When true, DML statements are automatically wrapped in BEGIN.
+    pub safe_mode: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +84,7 @@ impl PgClientApp {
             config,
             history,
             show_connection_dialog: true,
+            safe_mode: false,
         }
     }
 
@@ -105,6 +110,7 @@ impl PgClientApp {
                 status: ConnectionStatus::Connecting,
                 pending_ddl_schema: None,
                 pending_edit_table: None,
+                in_transaction: false,
             });
             self.active_conn = self.connections.len() - 1;
 
@@ -137,6 +143,7 @@ impl PgClientApp {
             status: ConnectionStatus::Connecting,
             pending_ddl_schema: None,
             pending_edit_table: None,
+            in_transaction: false,
         });
         self.active_conn = self.connections.len() - 1;
 
@@ -229,6 +236,12 @@ impl PgClientApp {
                     DbEvent::ErDiagramData { schema, tables } => {
                         self.tab_manager.set_er_diagram_data(&schema, tables);
                     }
+                    DbEvent::TransactionOpen => {
+                        self.connections[i].in_transaction = true;
+                    }
+                    DbEvent::TransactionClosed => {
+                        self.connections[i].in_transaction = false;
+                    }
                 }
             }
         }
@@ -262,6 +275,16 @@ impl PgClientApp {
             });
 
             ui.menu_button("Query", |ui| {
+                let safe_label = if self.safe_mode {
+                    "🛡 Safe Mode  ✓"
+                } else {
+                    "🛡 Safe Mode"
+                };
+                if ui.button(safe_label).clicked() {
+                    self.safe_mode = !self.safe_mode;
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button("Join Builder…").clicked() {
                     self.join_builder.open();
                     ui.close_menu();
@@ -353,8 +376,16 @@ impl PgClientApp {
         let _ = self.history.save();
         let conn_id = self.tab_manager.active_tab_conn_id();
         self.tab_manager.set_running_for(conn_id);
-        if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
-            let _ = conn.db_tx.send(DbCommand::Execute(sql));
+
+        let active_conn_idx = self.connections.iter().position(|c| c.id == conn_id);
+        if let Some(idx) = active_conn_idx {
+            let in_tx = self.connections[idx].in_transaction;
+            let cmd = if self.safe_mode && !in_tx && is_dml(&sql) {
+                DbCommand::ExecuteSafe(sql)
+            } else {
+                DbCommand::Execute(sql)
+            };
+            let _ = self.connections[idx].db_tx.send(cmd);
         } else {
             self.tab_manager.set_error_for(conn_id, "Not connected".into());
         }
@@ -465,6 +496,61 @@ impl eframe::App for PgClientApp {
             self.render_menu(ui);
         });
 
+        // Safe mode transaction banner (shown when a BEGIN is open)
+        let active_in_tx = self.connections.get(self.active_conn)
+            .map(|c| c.in_transaction)
+            .unwrap_or(false);
+        if active_in_tx {
+            egui::TopBottomPanel::top("safe_mode_banner").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 193, 7),
+                        "⚠  Safe Mode — transaction open. Changes are not yet saved.",
+                    );
+                    ui.add_space(12.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("✓  COMMIT")
+                                    .color(egui::Color32::from_rgb(40, 40, 40)),
+                            )
+                            .fill(egui::Color32::from_rgb(80, 200, 120)),
+                        )
+                        .clicked()
+                    {
+                        if let Some(conn) = self.connections.get(self.active_conn) {
+                            let _ = conn.db_tx.send(DbCommand::Commit);
+                        }
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("✕  ROLLBACK")
+                                    .color(egui::Color32::from_rgb(40, 40, 40)),
+                            )
+                            .fill(egui::Color32::from_rgb(220, 80, 80)),
+                        )
+                        .clicked()
+                    {
+                        if let Some(conn) = self.connections.get(self.active_conn) {
+                            let _ = conn.db_tx.send(DbCommand::Rollback);
+                        }
+                    }
+                });
+            });
+        } else if self.safe_mode {
+            // No open transaction — show subtle safe mode indicator
+            egui::TopBottomPanel::top("safe_mode_indicator").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(86, 156, 214),
+                        "🛡 Safe Mode ON — DML statements will be wrapped in BEGIN automatically.",
+                    );
+                });
+            });
+        }
+
         // Status bar at bottom
         self.render_status_bar(ctx);
 
@@ -524,6 +610,9 @@ impl eframe::App for PgClientApp {
                                 let schemas = conn.sidebar.schema_names();
                                 self.table_dialog.open_new(schema, schemas);
                             }
+                        }
+                        SidebarAction::SetSql(sql) => {
+                            self.tab_manager.set_sql(sql);
                         }
                         SidebarAction::ViewErDiagram { schema } => {
                             self.tab_manager.open_er_diagram(schema.clone(), conn_id);
@@ -652,6 +741,19 @@ impl eframe::App for PgClientApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
+}
+
+fn is_dml(sql: &str) -> bool {
+    let t = sql.trim().to_lowercase();
+    t.starts_with("insert")
+        || t.starts_with("update")
+        || t.starts_with("delete")
+        || t.starts_with("truncate")
+        || t.starts_with("create")
+        || t.starts_with("drop")
+        || t.starts_with("alter")
+        || t.starts_with("grant")
+        || t.starts_with("revoke")
 }
 
 fn configure_style(ctx: &egui::Context) {

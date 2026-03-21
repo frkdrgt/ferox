@@ -25,6 +25,12 @@ pub enum DbCommand {
     ExportJson { sql: String, path: String },
     LoadDashboard,
     LoadErDiagram { schema: String },
+    /// Execute DML inside an explicit BEGIN — keeps connection in transaction.
+    ExecuteSafe(String),
+    /// Commit the open safe-mode transaction.
+    Commit,
+    /// Roll back the open safe-mode transaction.
+    Rollback,
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -54,6 +60,10 @@ pub enum DbEvent {
         index_stats: Vec<IndexStat>,
     },
     ErDiagramData { schema: String, tables: Vec<ErTableInfo> },
+    /// A safe-mode transaction was opened (BEGIN succeeded).
+    TransactionOpen,
+    /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
+    TransactionClosed,
 }
 
 /// Handle that owns the DB background thread.
@@ -252,6 +262,50 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                         connections: conns,
                         index_stats: idxs,
                     });
+                }
+            }
+
+            DbCommand::ExecuteSafe(sql) => {
+                if let Some(c) = &mut client {
+                    // Open transaction
+                    if let Err(e) = c.simple_query("BEGIN").await {
+                        let _ = evt_tx.send(DbEvent::QueryError(format!("BEGIN failed: {e}")));
+                        continue;
+                    }
+                    let start = Instant::now();
+                    match execute_query(c, &sql).await {
+                        Ok(mut result) => {
+                            result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                            let _ = evt_tx.send(DbEvent::QueryResult(result));
+                            let _ = evt_tx.send(DbEvent::TransactionOpen);
+                        }
+                        Err(e) => {
+                            // Auto-rollback on error to keep connection clean
+                            let _ = c.simple_query("ROLLBACK").await;
+                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::TransactionClosed);
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::QueryError("Not connected".into()));
+                }
+            }
+
+            DbCommand::Commit => {
+                if let Some(c) = &mut client {
+                    match c.simple_query("COMMIT").await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                    }
+                }
+            }
+
+            DbCommand::Rollback => {
+                if let Some(c) = &mut client {
+                    match c.simple_query("ROLLBACK").await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                    }
                 }
             }
 
