@@ -599,6 +599,26 @@ impl Sidebar {
                                             ui.close_menu();
                                         }
                                     }
+                                    if matches!(table.kind, TableKind::View | TableKind::MaterializedView) {
+                                        if ui.button("{}  Show DDL").clicked() {
+                                            let sql = match table.kind {
+                                                TableKind::MaterializedView => format!(
+                                                    "SELECT 'CREATE MATERIALIZED VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
+                                                     || definition AS ddl \
+                                                     FROM pg_matviews \
+                                                     WHERE schemaname = '{schema_name}' \
+                                                       AND matviewname = '{table_name}';"
+                                                ),
+                                                _ => format!(
+                                                    "SELECT 'CREATE OR REPLACE VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
+                                                     || pg_get_viewdef('\"{}\".\"{table_name}\"'::regclass, true) AS ddl;",
+                                                    schema_name
+                                                ),
+                                            };
+                                            actions.push(SidebarAction::RunSql(sql));
+                                            ui.close_menu();
+                                        }
+                                    }
                                     if ui.button("∑  Count rows").clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT COUNT(*) AS total FROM \"{schema_name}\".\"{table_name}\";"

@@ -491,6 +491,10 @@ async fn execute_query(
                     return Ok(QueryResult { columns, rows: vec![], rows_affected: None, elapsed_ms: 0.0 });
                 }
             }
+            // SELECT-like but prepare() failed or returned no columns (e.g. a view
+            // that references a dropped object). Still report as SELECT (no
+            // rows_affected) so the caller doesn't mistake this for DML.
+            return Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None, elapsed_ms: 0.0 });
         }
     }
 
