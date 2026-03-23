@@ -1,58 +1,78 @@
-# pgclient — Yapılacaklar
+# Ferox — Yapılacaklar
 
-## Faz 5: Polish + Release
+## Aktif (Faz 7)
 
-### SQL Syntax Highlighting ✓
-- [x] `syntect` + `once_cell` Cargo.toml'a eklendi
-- [x] `src/ui/syntax.rs` yazıldı — `HighlightLines` + `LayoutJob` dönüşümü
-- [x] `query_panel.rs`'de `TextEdit::layouter` ile entegre edildi
-- [x] Dark mode → `base16-ocean.dark`, Light mode → `InspiredGitHub`
-- [x] SyntaxSet / ThemeSet `once_cell::Lazy` ile global cache (ilk kullanımda ~5ms yükle)
-
-### Uygulama İkonu
-- [ ] 32x32 ve 256x256 PNG ikon tasarla/bul
-- [ ] `main.rs`'deki `load_icon()` fonksiyonunu gerçek PNG bytes ile doldur
-- [ ] Windows için `.ico` dosyası oluştur (resource compiler)
-- [ ] macOS için `Info.plist` + `.icns`
-
-### Eksik Küçük Özellikler
-- [ ] Bağlantı dialog'unda "Test Connection" butonu (bağlan + ping + kapat)
-- [x] Profil silme (Connection menüsünden `×` butonu) ✓
-- [x] Bağlantı dialog'unda Cancel butonu çalışmıyordu — düzeltildi ✓
-- [x] Schema tree'de F5 ile yenileme (cache temizle + reload) ✓
+### Küçük Eksikler
+- [ ] Bağlantı dialog'unda "Test Connection" butonu
 - [ ] Sorgu editöründe Ctrl+A ile tümünü seç
-- [ ] Sonuç tablosunda hücreye çift tık → tam değeri popup'ta göster (uzun text için)
 - [ ] NULL değerlere özel renk tercihini config'e kaydet
-- [x] Tab başlığında aktif DB adını göster ✓
-
-### UI Modernizasyon ✓
-- [x] JetBrains Darcula renk paleti (`configure_style()` — `#2b2b2b` panel, `#4e9fde` accent)
-- [x] Toolbar: Run yeşil, Cancel kırmızı, buton grupları separator ile ayrıldı
-- [x] Tab bar: aktif tab altında mavi çizgi göstergesi, Frame arka planı
-- [x] Sidebar: section badge'leri yuvarlak pill, hover rengi güncellendi, seçim çubuğu 3px mavi
-
-### Performans
-- [x] Schema tree'de TTL-based cache (60 saniye) — F5 ile manuel refresh de ✓
 - [ ] Büyük sonuç setlerinde (>10k satır) column width hesabını lazy yap
-- [ ] Release build boyutunu ölç: `cargo build --release && ls -lh target/release/pgclient`
 
-### Dağıtım / CI-CD
-- [x] `.github/workflows/release.yml` — tag push'unda otomatik build + GitHub Release ✓
-- [x] `pgclient.exe.manifest` — DPI awareness, UTF-8, Windows compat ✓
-- [x] `build.rs` — manifest + ikon embed (winresource) ✓
-- [x] macOS: `lipo` universal binary + `.app` bundle + `.dmg` (workflow içinde) ✓
-- [ ] 32x32 + 256x256 PNG ikon → `assets/icon.png` + `assets/icon.ico`
-- [ ] Windows: msvc toolchain ile yerel test (`rustup default stable-x86_64-pc-windows-msvc`)
-- [ ] GitHub repo oluştur + ilk release: `git tag v0.1.0 && git push --tags`
-- [ ] Her iki platformda startup süresi ve RAM ölçümü
+---
+
+## Tamamlanan
+
+### Faz 6 — Multi-statement, Tab UX, RAM Optimizasyonları ✓
+- [x] Sorgu sonuna `;` koyunca hata veriyordu — `simple_query` protokolüne geçildi
+- [x] Birden fazla `;` ayrılmış statement sırayla çalışır, son SELECT gösterilir
+- [x] Tablo ismine tıklayınca her tablo ayrı tab'da açılıyor
+- [x] Tab sağ-tık menüsü: Close tab / Close other tabs / Close all tabs
+- [x] Boş tablo/view sütun başlıklarını göstermiyor — `prepare()` fallback eklendi
+- [x] View/materialized view browse sonuç dönmüyordu — DML detection fix
+- [x] View/MatView context menüsüne "Show DDL" eklendi
+- [x] syntect kaldırıldı → sıfırdan SQL tokenizer (~30-45 MB RAM tasarrufu)
+- [x] `new_multi_thread(2)` → `new_current_thread()` (2 idle worker thread kaldırıldı)
+- [x] `accesskit`, `rt-multi-thread`, gereksiz tokio-postgres features kaldırıldı
+- [x] Sorgu sonucu 50.000 satır hard cap
+
+### Faz 5 — Polish + Release ✓
+- [x] SQL syntax highlighting (dark/light tema)
+- [x] Uygulama ikonu (PNG + Windows .ico embed)
+- [x] CI/CD: tag push'unda otomatik GitHub Release
+- [x] JetBrains Darcula renk paleti
+- [x] Tab bar modernizasyonu (aktif tab mavi çizgi, hover rengi)
+- [x] Profil silme (Connection menüsünden `×`)
+- [x] Bağlantı dialog Cancel butonu fix
+- [x] Schema tree F5 ile yenileme
+- [x] Crash log (`~/.local/share/pgclient/crash.log`)
+- [x] Script generation (SELECT/INSERT/UPDATE/DELETE)
+- [x] Safe mode transactions (explicit BEGIN/COMMIT/ROLLBACK)
+
+### Faz 4 ✓
+- [x] Data browser (tablo çift tık → sayfalama)
+- [x] DB-side ORDER BY (sütun başlığına tık)
+- [x] Inline cell editing (çift tık → UPDATE)
+- [x] CSV & JSON export (native OS file dialog)
+
+### Faz 3 ✓
+- [x] Query editor (SQL editör + sonuç tablosu)
+- [x] Virtual scrolling
+- [x] Client-side sort
+- [x] Sorgu geçmişi (max 500, kalıcı)
+
+### Faz 2 ✓
+- [x] Schema browser (lazy load, filtre)
+- [x] Context menu (Browse, Scripts, Count, Show columns/indexes/FK)
+- [x] ER diyagramı görünümü
+
+### Faz 1 ✓
+- [x] Bağlantı dialog (host/port/user/pass/db/ssl)
+- [x] SSL/TLS desteği
+- [x] Profil kaydetme (TOML)
+- [x] Çoklu eş zamanlı bağlantı
+
+### Faz 0 ✓
+- [x] Proje iskeleti
+- [x] UI/DB thread ayrımı (mpsc kanalları)
+- [x] Tokio async runtime (DB thread'inde)
 
 ---
 
 ## Gelecek Fikirler (Scope dışı şimdilik)
-
-- [x] Çoklu sekme (tab) — aynı anda birden fazla sorgu editörü
-- [x] Otomatik tamamlama (tablo/sütun adları)
-- [x] ER diyagramı görünümü
-- [x] SSH tunnel desteği
-- [x] Sorgu planı görselleştirme (EXPLAIN ANALYZE) ✓
-- [x] Tablo verisi düzenleme (inline edit + UPDATE) ✓
+- [ ] Bookmarked queries (kayıtlı sorgular)
+- [ ] Dark/light tema runtime switch
+- [ ] Result diff (iki sonucu yan yana karşılaştır)
+- [ ] CSV/JSON import (drag-and-drop)
+- [ ] Stored procedure / function browser
+- [ ] Query formatter için klavye kısayolu
+- [ ] Code signing sertifikası (antivirüs false positive çözümü)

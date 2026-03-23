@@ -21,29 +21,36 @@
 
 ---
 
-> **Ferox** runs in under 30 MB and starts in under 200 ms — because your database client shouldn't be the bottleneck.
+> **Ferox** runs under 50 MB and starts in under 200 ms — because your database client shouldn't be the bottleneck.
 
 ---
 
 ## Features
 
 ### Core
-- **Multi-tab query editor** — Ctrl+T for new tab, Ctrl+W to close, syntax highlighting out of the box
+- **Multi-tab query editor** — Ctrl+T for new tab, Ctrl+W to close, right-click tab for Close / Close Others / Close All
+- **Per-table tabs** — clicking a table opens it in its own tab; existing tabs are reused
 - **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables, with live filter
-- **Data browser** — double-click any table to browse with server-side pagination & ORDER BY
+- **Data browser** — double-click any table or view to browse with server-side pagination & ORDER BY
 - **Inline editing** — double-click a cell to edit, Enter to commit, Escape to cancel
 - **Persistent query history** — last 500 queries, searchable, click to reload
 
 ### Query Tools
-- **Join Builder** — visual multi-table JOIN generator with automatic column discovery; outputs ready-to-run SQL
+- **Multi-statement execution** — paste multiple SQL statements separated by `;`, all run in sequence
+- **View DDL** — right-click any view or materialized view → Show DDL
 - **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node
+- **Safe mode transactions** — DML wrapped in explicit BEGIN/COMMIT/ROLLBACK
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
+- **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
 
 ### Developer Experience
-- **SQL syntax highlighting** — dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes via `syntect`
-- **Connection profiles** — saved to `~/.config/ferox/config.toml`, SSL modes supported
+- **SQL syntax highlighting** — zero-dependency tokenizer, dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes
+- **SQL autocomplete** — table names, column names, keywords
+- **Connection profiles** — saved to `~/.config/ferox/config.toml`, SSL modes + SSH tunnel supported
 - **F5 / Ctrl+Enter** to run, **Ctrl+C** to cancel mid-query
 - **Native OS dialogs** — file pickers feel at home on Windows and macOS
+- **Database dashboard** — table sizes, index stats, active connections at a glance
+- **ER diagram** — visual schema relationship viewer
 
 ---
 
@@ -51,10 +58,9 @@
 
 | Metric | Ferox |
 |--------|-------|
-| RAM at idle | **~25 MB** 
-| RAM with 10k rows | **~55 MB**
+| RAM at idle | **~45 MB**
 | Cold startup | **< 200 ms**
-| Binary size | **< 15 MB**
+| Binary size | **~7 MB**
 
 *Measured on Windows 10, release build with LTO.*
 
@@ -182,7 +188,8 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 | PostgreSQL driver | [`tokio-postgres`](https://github.com/sfackler/rust-postgres) |
 | Async runtime | `tokio` (current-thread in DB thread) |
 | TLS | `native-tls` + `postgres-native-tls` |
-| Syntax highlighting | [`syntect`](https://github.com/trishume/syntect) |
+| SSH tunnel | `russh` |
+| SQL highlighting | custom zero-dependency tokenizer (`src/ui/syntax.rs`) |
 | Config | `serde` + `toml` |
 | File dialogs | [`rfd`](https://github.com/PolyMeilex/rfd) |
 
@@ -196,6 +203,9 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 - [x] **SSH tunnel** — connect through a jump host
 - [x] **ER diagram** — visual schema relationships
 - [x] **Query formatter** — one-click SQL beautification
+- [x] **Multi-statement queries** — run multiple statements separated by `;`
+- [x] **View DDL** — right-click any view or materialized view to see its definition
+- [x] **Safe mode transactions** — explicit BEGIN/COMMIT/ROLLBACK for DML
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch
 - [ ] **Result diff** — compare two query results side-by-side
