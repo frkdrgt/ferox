@@ -44,6 +44,13 @@ impl Tab {
     }
 }
 
+// ── Context-menu actions ──────────────────────────────────────────────────────
+
+enum TabContextAction {
+    CloseOthers(usize),
+    CloseAll,
+}
+
 // ── TabManager ────────────────────────────────────────────────────────────────
 
 pub struct TabManager {
@@ -199,6 +206,39 @@ impl TabManager {
         }
     }
 
+    /// Close every tab except `keep_idx`. The kept tab becomes active.
+    fn close_others(&mut self, keep_idx: usize) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        let keep_id = self.tabs[keep_idx].id;
+        self.tabs.retain(|t| t.id == keep_id);
+        self.running_tabs.retain(|_, v| {
+            // remap indices — only the kept tab (now at 0) survives
+            let _ = v; true
+        });
+        self.running_tabs.clear();
+        self.active = 0;
+    }
+
+    /// Close all tabs, leaving one blank Query tab.
+    fn close_all(&mut self) {
+        let conn_id = self.tabs.get(self.active).map(|t| t.conn_id).unwrap_or(0);
+        self.tabs.clear();
+        self.running_tabs.clear();
+        let id = self.next_id;
+        self.next_id += 1;
+        let num = self.next_num;
+        self.next_num += 1;
+        self.tabs.push(Tab {
+            id,
+            title: format!("Query {num}"),
+            content: TabContent::Query(QueryPanel::default()),
+            conn_id,
+        });
+        self.active = 0;
+    }
+
     fn next_tab(&mut self) {
         self.active = (self.active + 1) % self.tabs.len();
     }
@@ -316,7 +356,9 @@ impl TabManager {
         self.active_panel().and_then(|p| p.result_row_count())
     }
 
-    /// Start browsing `schema.table` in the active tab, updating its title.
+    /// Open `schema.table` for browsing.
+    /// Reuses an existing tab already showing that table, or the active tab if it
+    /// is empty, otherwise opens a new tab.
     pub fn start_browse(
         &mut self,
         schema: String,
@@ -324,11 +366,42 @@ impl TabManager {
         conn_id: usize,
         db_tx: &Sender<DbCommand>,
     ) {
-        let active = self.active;
-        self.tabs[active].title = table.clone();
-        self.tabs[active].conn_id = conn_id;
-        self.running_tabs.insert(conn_id, active);
-        if let Some(p) = self.tabs[active].panel_mut() {
+        // 1. Reuse an existing tab already browsing this exact table.
+        if let Some(idx) = self.tabs.iter().position(|t| {
+            t.conn_id == conn_id
+                && t.panel()
+                    .and_then(|p| p.browsing_table())
+                    .map(|(s, tbl)| s == schema && tbl == table)
+                    .unwrap_or(false)
+        }) {
+            self.active = idx;
+            return;
+        }
+
+        // 2. If the active tab is empty, reuse it; otherwise create a new tab.
+        let target = if self.tabs[self.active]
+            .panel()
+            .map(|p| p.is_empty())
+            .unwrap_or(false)
+        {
+            self.active
+        } else {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.tabs.push(Tab {
+                id,
+                title: table.clone(),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id,
+            });
+            self.active = self.tabs.len() - 1;
+            self.active
+        };
+
+        self.tabs[target].title = table.clone();
+        self.tabs[target].conn_id = conn_id;
+        self.running_tabs.insert(conn_id, target);
+        if let Some(p) = self.tabs[target].panel_mut() {
             p.start_browse(schema, table, db_tx);
         }
     }
@@ -385,7 +458,7 @@ impl TabManager {
         }
 
         // ── Tab bar ───────────────────────────────────────────────────────────
-        let (to_select, to_close, want_new) = self.render_tab_bar(ui);
+        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui);
         if let Some(idx) = to_select {
             self.active = idx;
         }
@@ -395,6 +468,11 @@ impl TabManager {
         if want_new {
             let cid = self.active_tab_conn_id();
             self.new_tab(cid);
+        }
+        match ctx_action {
+            Some(TabContextAction::CloseOthers(keep)) => self.close_others(keep),
+            Some(TabContextAction::CloseAll)           => self.close_all(),
+            None => {}
         }
 
         // ── Active panel ──────────────────────────────────────────────────────
@@ -406,8 +484,18 @@ impl TabManager {
         });
 
         if tab_kind == Some(0) {
-            if self.dashboard.show_inline(ui) {
+            let (refresh, kill_pid) = self.dashboard.show_inline(ui);
+            if refresh {
                 self.dashboard.set_loading();
+            }
+            if let Some(pid) = kill_pid {
+                if let Some(conn_id) = self.dashboard_conn_id() {
+                    if let Some(tx) = conns.iter().find(|(id, _)| *id == conn_id).map(|(_, tx)| *tx) {
+                        let _ = tx.send(crate::db::DbCommand::KillConnection { pid });
+                        // Reload dashboard after a short delay — handled by Empty state
+                        self.dashboard.set_loading();
+                    }
+                }
             }
         } else if tab_kind == Some(1) {
             if let Some(tab) = self.tabs.get_mut(active_idx) {
@@ -448,10 +536,11 @@ impl TabManager {
     fn render_tab_bar(
         &self,
         ui: &mut egui::Ui,
-    ) -> (Option<usize>, Option<usize>, bool) {
+    ) -> (Option<usize>, Option<usize>, bool, Option<TabContextAction>) {
         let mut to_select: Option<usize> = None;
         let mut to_close: Option<usize> = None;
         let mut want_new = false;
+        let mut ctx_action: Option<TabContextAction> = None;
 
         let tab_count = self.tabs.len();
 
@@ -515,27 +604,36 @@ impl TabManager {
                         ui.push_id(*tab_id, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    egui::Label::new(
-                                        RichText::new(&display).size(12.0).color(text_color),
-                                    )
-                                    .sense(Sense::click()),
+                            // Label handles both left-click (select) and right-click (menu).
+                            let tab_i = *i;
+                            let label_r = ui.add(
+                                egui::Label::new(
+                                    RichText::new(&display).size(12.0).color(text_color),
                                 )
-                                .clicked()
-                            {
-                                to_select = Some(*i);
+                                .sense(Sense::click()),
+                            );
+                            if label_r.clicked() {
+                                to_select = Some(tab_i);
                             }
+                            label_r.context_menu(|ui| {
+                                if tab_count > 1 {
+                                    if ui.button("Bu tabı kapat").clicked() {
+                                        to_close = Some(tab_i);
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button("Diğer tabları kapat").clicked() {
+                                        ctx_action = Some(TabContextAction::CloseOthers(tab_i));
+                                        ui.close_menu();
+                                    }
+                                }
+                                if ui.button("Tüm tabları kapat").clicked() {
+                                    ctx_action = Some(TabContextAction::CloseAll);
+                                    ui.close_menu();
+                                }
+                            });
 
-                            // Dashboard tab: no close button if it's the only tab.
-                            // Query tabs: show close button if there are multiple tabs.
-                            let can_close = if *is_dashboard {
-                                tab_count > 1
-                            } else {
-                                tab_count > 1
-                            };
-
-                            if can_close {
+                            if tab_count > 1 {
                                 let xr = ui.add(
                                     egui::Button::new(
                                         RichText::new("×")
@@ -546,7 +644,7 @@ impl TabManager {
                                     .min_size(egui::Vec2::splat(14.0)),
                                 );
                                 if xr.clicked() {
-                                    to_close = Some(*i);
+                                    to_close = Some(tab_i);
                                 }
                             }
                         }); // horizontal
@@ -588,7 +686,7 @@ impl TabManager {
 
         ui.separator();
 
-        (to_select, to_close, want_new)
+        (to_select, to_close, want_new, ctx_action)
     }
 }
 

@@ -390,7 +390,7 @@ impl Sidebar {
                         if ui.is_rect_visible(rect) {
                             let painter = ui.painter();
                             let bg = if resp.hovered() {
-                                Color32::from_rgb(32, 44, 68)
+                                Color32::from_rgb(65, 69, 73)
                             } else {
                                 Color32::TRANSPARENT
                             };
@@ -674,27 +674,40 @@ impl Sidebar {
 fn render_kind_header(ui: &mut egui::Ui, label: &str, count: usize) {
     ui.add_space(4.0);
     let available_w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(available_w, 14.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(available_w, 18.0), Sense::hover());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let text = format!("{label} ({count})");
-        // Draw text
+
+        // Label text
         painter.text(
-            rect.left_center() + Vec2::new(2.0, 0.0),
+            rect.left_center() + Vec2::new(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            &text,
+            label.to_uppercase(),
             egui::FontId::proportional(9.5),
-            COLOR_KIND_HEADER,
+            Color32::from_rgb(110, 123, 139), // TEXT_DIM
         );
-        // Draw line to the right
-        let line_x = 2.0 + (text.len() as f32 * 5.8).min(available_w - 10.0);
-        painter.line_segment(
-            [
-                rect.left_center() + Vec2::new(line_x + 4.0, 0.0),
-                rect.right_center() + Vec2::new(-4.0, 0.0),
-            ],
-            egui::Stroke::new(0.5, Color32::from_gray(45)),
+
+        // Count badge — pill background
+        let badge_str = format!("{count}");
+        let badge_font = egui::FontId::proportional(9.5);
+        let badge_galley = painter.layout_no_wrap(
+            badge_str.clone(),
+            badge_font.clone(),
+            Color32::from_rgb(110, 123, 139),
+        );
+        let badge_w = badge_galley.rect.width() + 8.0;
+        let badge_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - badge_w / 2.0 - 4.0, rect.center().y),
+            egui::vec2(badge_w, 13.0),
+        );
+        painter.rect_filled(badge_rect, egui::Rounding::same(6.0), Color32::from_rgb(76, 80, 82));
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &badge_str,
+            badge_font,
+            Color32::from_rgb(169, 183, 198),
         );
     }
 }
@@ -716,7 +729,7 @@ fn render_table_row_ui(
         let bg = if is_selected {
             Color32::from_rgba_premultiplied(86, 156, 214, 35)
         } else if resp.hovered() {
-            Color32::from_rgb(32, 44, 68)
+            Color32::from_rgb(65, 69, 73)
         } else {
             Color32::TRANSPARENT
         };
@@ -725,9 +738,9 @@ fn render_table_row_ui(
         if is_selected {
             let bar = egui::Rect::from_min_size(
                 rect.left_top(),
-                Vec2::new(2.0, rect.height()),
+                Vec2::new(3.0, rect.height()),
             );
-            painter.rect_filled(bar, 0.0, COLOR_TABLE);
+            painter.rect_filled(bar, 0.0, Color32::from_rgb(78, 159, 222)); // #4e9fde
         }
 
         // Expand arrow

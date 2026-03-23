@@ -276,17 +276,24 @@ impl Autocomplete {
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 /// Find the start and content of the word at `cursor` in `text`.
-/// A "word" is a sequence of alphanumeric characters or underscores.
-pub fn extract_word(text: &str, cursor: usize) -> (usize, &str) {
-    let cursor = cursor.min(text.len());
-    let before = &text[..cursor];
+/// `cursor` is a **char index** (from egui `CCursor::index`).
+/// Returns `(word_start_byte, word_slice)` where `word_start_byte` is a byte offset.
+pub fn extract_word(text: &str, cursor_char: usize) -> (usize, &str) {
+    // Convert char index → byte offset (safe even with multi-byte UTF-8).
+    let cursor_byte = text
+        .char_indices()
+        .nth(cursor_char)
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
 
-    // Find the start of the current word (last non-word char)
+    let before = &text[..cursor_byte];
+
+    // rfind returns byte offsets; advance past the delimiter char.
     let word_start = before
         .rfind(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|i| i + before[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1))
         .unwrap_or(0);
 
-    let word = &text[word_start..cursor];
+    let word = &text[word_start..cursor_byte];
     (word_start, word)
 }

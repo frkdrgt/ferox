@@ -50,6 +50,9 @@ pub struct ConnectionProfile {
     pub ssl: SslMode,
     #[serde(default)]
     pub ssh_tunnel: Option<SshTunnelConfig>,
+    /// Optional group label (e.g. "Production", "Staging", "Dev")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl Default for ConnectionProfile {
@@ -63,6 +66,7 @@ impl Default for ConnectionProfile {
             database: "postgres".into(),
             ssl: SslMode::Prefer,
             ssh_tunnel: None,
+            group: None,
         }
     }
 }

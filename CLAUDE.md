@@ -72,9 +72,17 @@ cargo test --test integration
 - **Faz 2**: Schema browser (lazy load, filtre, context menu) ✓
 - **Faz 3**: Query editor, sonuç tablosu, virtual scrolling, client+DB sort ✓
 - **Faz 4**: Data browser, sayfalama, DB-side ORDER BY, native export diyaloğu ✓
+- **Faz 5** (kısmi): Uygulama ikonu, release CI/CD, UI modernizasyon, bug fix'ler ✓
 
 ## Kalan Fazlar
-- **Faz 5**: Uygulama ikonu, platform release build, eksik küçük özellikler (TODO.md'ye bak)
+- **Faz 5** (devam): Test Connection butonu, Ctrl+A, NULL renk tercihi (TODO.md'ye bak)
+
+## UI Tema Notları
+`src/app.rs:configure_style()` — JetBrains Darcula paleti:
+- Panel: `#2b2b2b`, Window: `#3c3f41`, Faint: `#313335`
+- Accent/seçim: `#4e9fde` (mavi), Hover: `#5c6164`
+- Run butonu: `#499c54` (yeşil), Cancel: `#c75450` (kırmızı)
+- Yeni renk/spacing eklerken bu fonksiyonu güncelle, hardcode etme
 
 ## Syntax Highlighting
 `src/ui/syntax.rs` — `highlight_sql(ui, text, wrap_width) -> LayoutJob`

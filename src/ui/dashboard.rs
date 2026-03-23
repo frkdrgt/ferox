@@ -62,9 +62,10 @@ impl Dashboard {
     }
 
     /// Render the dashboard content inline (no Window wrapper).
-    /// Returns true when the Refresh button is clicked.
-    pub fn show_inline(&mut self, ui: &mut egui::Ui) -> bool {
+    /// Returns `(refresh_clicked, kill_pid)`.
+    pub fn show_inline(&mut self, ui: &mut egui::Ui) -> (bool, Option<String>) {
         let mut refresh_clicked = false;
+        let mut kill_pid: Option<String> = None;
 
         // Toolbar
         ui.horizontal(|ui| {
@@ -106,7 +107,7 @@ impl Dashboard {
                         show_table_sizes(ui, table_stats);
                     }
                     DashTab::Connections => {
-                        show_connections(ui, connections);
+                        kill_pid = show_connections(ui, connections);
                     }
                     DashTab::IndexStats => {
                         show_index_stats(ui, index_stats);
@@ -115,7 +116,7 @@ impl Dashboard {
             }
         }
 
-        refresh_clicked
+        (refresh_clicked, kill_pid)
     }
 }
 
@@ -152,8 +153,10 @@ fn show_table_sizes(ui: &mut egui::Ui, stats: &[TableStat]) {
         });
 }
 
-fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) {
+fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) -> Option<String> {
     let available = ui.available_height();
+    let mut kill_pid: Option<String> = None;
+
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
@@ -164,6 +167,7 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) {
         .column(Column::initial(80.0).resizable(true))   // State
         .column(Column::initial(70.0).resizable(true))   // Duration
         .column(Column::remainder().resizable(true))     // Query
+        .column(Column::initial(50.0))                   // Kill
         .header(22.0, |mut header| {
             header.col(|ui| { ui.strong("PID"); });
             header.col(|ui| { ui.strong("User"); });
@@ -171,22 +175,24 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) {
             header.col(|ui| { ui.strong("State"); });
             header.col(|ui| { ui.strong("Duration"); });
             header.col(|ui| { ui.strong("Query"); });
+            header.col(|ui| { ui.strong(""); });
         })
         .body(|mut body| {
             for conn in conns {
-                body.row(18.0, |mut row| {
-                    row.col(|ui| { ui.label(&conn.pid); });
+                body.row(22.0, |mut row| {
+                    row.col(|ui| { ui.label(egui::RichText::new(&conn.pid).monospace().small()); });
                     row.col(|ui| { ui.label(&conn.username); });
                     row.col(|ui| { ui.label(&conn.app_name); });
                     row.col(|ui| {
-                        let color = match conn.state.as_str() {
-                            "active" => egui::Color32::from_rgb(80, 200, 120),
-                            "idle" => egui::Color32::GRAY,
-                            _ => egui::Color32::from_rgb(220, 160, 60),
+                        let (color, label) = match conn.state.as_str() {
+                            "active" => (egui::Color32::from_rgb(80, 200, 120), "active"),
+                            "idle" => (egui::Color32::from_rgb(110, 123, 139), "idle"),
+                            "idle in transaction" => (egui::Color32::from_rgb(220, 160, 60), "idle/tx"),
+                            s => (egui::Color32::from_rgb(220, 160, 60), s),
                         };
-                        ui.colored_label(color, &conn.state);
+                        ui.colored_label(color, label);
                     });
-                    row.col(|ui| { ui.label(&conn.duration); });
+                    row.col(|ui| { ui.label(egui::RichText::new(&conn.duration).small()); });
                     row.col(|ui| {
                         ui.add(
                             egui::Label::new(
@@ -197,9 +203,25 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) {
                             .wrap(true),
                         );
                     });
+                    row.col(|ui| {
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Kill")
+                                .small()
+                                .color(egui::Color32::from_rgb(220, 80, 80)),
+                        )
+                        .fill(egui::Color32::TRANSPARENT);
+                        if ui.add(btn)
+                            .on_hover_text(format!("Terminate PID {}", conn.pid))
+                            .clicked()
+                        {
+                            kill_pid = Some(conn.pid.clone());
+                        }
+                    });
                 });
             }
         });
+
+    kill_pid
 }
 
 fn show_index_stats(ui: &mut egui::Ui, stats: &[IndexStat]) {

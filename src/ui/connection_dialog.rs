@@ -4,6 +4,7 @@ use crate::config::{ConnectionProfile, SshAuthMethod, SshTunnelConfig, SslMode};
 pub struct ConnectionDialog {
     pub profile: ConnectionProfile,
     pub should_save: bool,
+    pub cancelled: bool,
     pub error: Option<String>,
     password_buf: String,
     // SSH UI state
@@ -35,6 +36,17 @@ impl ConnectionDialog {
             .show(ui, |ui| {
                 ui.label("Name:");
                 ui.text_edit_singleline(&mut self.profile.name);
+                ui.end_row();
+
+                ui.label("Group:");
+                let mut group_buf = self.profile.group.clone().unwrap_or_default();
+                let changed = ui.add(
+                    egui::TextEdit::singleline(&mut group_buf)
+                        .hint_text("e.g. Production, Staging, Dev (optional)"),
+                ).changed();
+                if changed {
+                    self.profile.group = if group_buf.is_empty() { None } else { Some(group_buf) };
+                }
                 ui.end_row();
 
                 ui.label("Host:");
@@ -174,7 +186,7 @@ impl ConnectionDialog {
                 connect = true;
             }
             if ui.button("Cancel").clicked() {
-                // Signal cancel by returning None (caller closes the window)
+                self.cancelled = true;
             }
         });
 

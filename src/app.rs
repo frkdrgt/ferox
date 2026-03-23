@@ -246,6 +246,13 @@ impl PgClientApp {
                     DbEvent::ExportDone(path) => {
                         self.tab_manager.set_export_done(path);
                     }
+                    DbEvent::KillDone(_pid) => {
+                        // Auto-reload dashboard after kill
+                        self.tab_manager.set_dashboard_loading();
+                        if let Some(conn) = self.connections.iter().find(|c| c.id == conn_id) {
+                            let _ = conn.db_tx.send(DbCommand::LoadDashboard);
+                        }
+                    }
                     DbEvent::DdlDone => {
                         if let Some(schema) = self.connections[i].pending_ddl_schema.take() {
                             let _ = self.connections[i]
@@ -285,13 +292,52 @@ impl PgClientApp {
                     ui.close_menu();
                 }
                 if !self.config.connections.is_empty() {
-                    ui.separator();
                     let profiles = self.config.connections.clone();
-                    for (i, profile) in profiles.iter().enumerate() {
-                        if ui.button(&profile.name).clicked() {
-                            self.connect_to_profile(i);
-                            ui.close_menu();
+                    let mut to_delete: Option<usize> = None;
+
+                    // Collect ordered unique groups
+                    let mut seen_groups: Vec<Option<String>> = vec![];
+                    for p in &profiles {
+                        if !seen_groups.contains(&p.group) {
+                            seen_groups.push(p.group.clone());
                         }
+                    }
+
+                    for group in &seen_groups {
+                        ui.separator();
+                        if let Some(g) = group {
+                            let dot = match g.to_lowercase() {
+                                s if s.contains("prod") => "🔴",
+                                s if s.contains("stag") || s.contains("test") => "🟡",
+                                s if s.contains("dev") || s.contains("local") => "🟢",
+                                _ => "🔵",
+                            };
+                            ui.label(
+                                egui::RichText::new(format!("{dot} {g}"))
+                                    .small()
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(110, 123, 139)),
+                            );
+                        }
+                        for (i, profile) in profiles.iter().enumerate() {
+                            if profile.group.as_deref() == group.as_deref() {
+                                ui.horizontal(|ui| {
+                                    if ui.button(&profile.name).clicked() {
+                                        self.connect_to_profile(i);
+                                        ui.close_menu();
+                                    }
+                                    if ui.small_button("×").clicked() {
+                                        to_delete = Some(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                        }
+                    }
+
+                    if let Some(idx) = to_delete {
+                        self.config.connections.remove(idx);
+                        let _ = self.config.save();
                     }
                 }
                 ui.separator();
@@ -785,6 +831,10 @@ impl eframe::App for PgClientApp {
                         self.connect_with_profile(profile);
                         self.show_connection_dialog = false;
                     }
+                    if self.connection_dialog.cancelled {
+                        self.connection_dialog.cancelled = false;
+                        self.show_connection_dialog = false;
+                    }
                 });
             if !open {
                 self.show_connection_dialog = false;
@@ -815,26 +865,26 @@ fn is_dml(sql: &str) -> bool {
 }
 
 fn configure_style(ctx: &egui::Context) {
-    // ── Dark visuals ────────────────────────────────────────────────────────
+    // ── JetBrains Darcula-inspired dark visuals ──────────────────────────────
     let mut vis = egui::Visuals::dark();
 
-    vis.panel_fill       = egui::Color32::from_rgb(18, 20, 24);
-    vis.window_fill      = egui::Color32::from_rgb(24, 27, 32);
-    vis.faint_bg_color   = egui::Color32::from_rgb(28, 32, 38);
+    vis.panel_fill     = egui::Color32::from_rgb(43, 43, 43);   // #2b2b2b
+    vis.window_fill    = egui::Color32::from_rgb(60, 63, 65);   // #3c3f41
+    vis.faint_bg_color = egui::Color32::from_rgb(49, 51, 53);   // #313335
 
-    vis.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(30, 34, 40);
-    vis.widgets.inactive.bg_fill       = egui::Color32::from_rgb(36, 40, 48);
-    vis.widgets.hovered.bg_fill        = egui::Color32::from_rgb(38, 56, 90);
-    vis.widgets.hovered.weak_bg_fill   = egui::Color32::from_rgb(38, 56, 90);
-    vis.widgets.active.bg_fill         = egui::Color32::from_rgb(55, 62, 74);
+    vis.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(49, 51, 53);
+    vis.widgets.inactive.bg_fill       = egui::Color32::from_rgb(76, 80, 82);   // #4c5052
+    vis.widgets.hovered.bg_fill        = egui::Color32::from_rgb(92, 97, 100);  // #5c6164
+    vis.widgets.hovered.weak_bg_fill   = egui::Color32::from_rgb(92, 97, 100);
+    vis.widgets.active.bg_fill         = egui::Color32::from_rgb(78, 159, 222); // #4e9fde
 
     vis.selection.bg_fill =
-        egui::Color32::from_rgba_premultiplied(86, 156, 214, 60);
+        egui::Color32::from_rgba_premultiplied(33, 66, 131, 180); // #214283
     vis.selection.stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(86, 156, 214));
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(78, 159, 222)); // #4e9fde
 
     vis.widgets.noninteractive.bg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 50, 58));
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(74, 76, 78)); // #4a4c4e
 
     vis.window_rounding = egui::Rounding::same(6.0);
     vis.menu_rounding   = egui::Rounding::same(4.0);
@@ -844,17 +894,18 @@ fn configure_style(ctx: &egui::Context) {
     // ── Spacing & fonts ─────────────────────────────────────────────────────
     let mut style = (*ctx.style()).clone();
 
-    style.spacing.item_spacing   = egui::vec2(6.0, 4.0);
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
+    style.spacing.item_spacing   = egui::vec2(6.0, 5.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.menu_margin    = egui::Margin::same(6.0);
     style.spacing.window_margin  = egui::Margin::same(10.0);
+    style.spacing.indent         = 12.0;
 
     use egui::{FontId, TextStyle};
-    style.text_styles.insert(TextStyle::Heading,  FontId::proportional(15.0));
-    style.text_styles.insert(TextStyle::Body,     FontId::proportional(13.0));
-    style.text_styles.insert(TextStyle::Button,   FontId::proportional(13.0));
-    style.text_styles.insert(TextStyle::Small,    FontId::proportional(11.0));
-    style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
+    style.text_styles.insert(TextStyle::Heading,   FontId::proportional(15.0));
+    style.text_styles.insert(TextStyle::Body,       FontId::proportional(13.0));
+    style.text_styles.insert(TextStyle::Button,     FontId::proportional(13.0));
+    style.text_styles.insert(TextStyle::Small,      FontId::proportional(11.0));
+    style.text_styles.insert(TextStyle::Monospace,  FontId::monospace(13.0));
 
     ctx.set_style(style);
 }

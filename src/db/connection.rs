@@ -31,6 +31,8 @@ pub enum DbCommand {
     Commit,
     /// Roll back the open safe-mode transaction.
     Rollback,
+    /// Terminate a backend process by PID (pg_terminate_backend).
+    KillConnection { pid: String },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -54,6 +56,8 @@ pub enum DbEvent {
     ExportDone(String),
     /// DDL executed successfully.
     DdlDone,
+    /// pg_terminate_backend succeeded for this PID.
+    KillDone(String),
     DashboardData {
         table_stats: Vec<TableStat>,
         connections: Vec<ConnInfo>,
@@ -309,6 +313,16 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                 }
             }
 
+            DbCommand::KillConnection { pid } => {
+                if let Some(c) = &client {
+                    let sql = format!("SELECT pg_terminate_backend({pid}::int)");
+                    match c.simple_query(&sql).await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::KillDone(pid)); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                    }
+                }
+            }
+
             DbCommand::LoadErDiagram { schema } => {
                 if let Some(c) = &client {
                     match metadata::load_er_diagram(c, &schema).await {
@@ -393,51 +407,88 @@ async fn execute_query(
     client: &mut tokio_postgres::Client,
     sql: &str,
 ) -> Result<QueryResult> {
-    // Detect if this is a SELECT-like statement.
-    let trimmed = sql.trim().to_lowercase();
-    let is_query = trimmed.starts_with("select")
-        || trimmed.starts_with("with")
-        || trimmed.starts_with("table")
-        || trimmed.starts_with("values")
-        || trimmed.starts_with("show")
-        || trimmed.starts_with("explain");
+    // Use simple_query (text protocol) for ALL statements:
+    // - Supports semicolons and multiple statements in one call.
+    // - All PostgreSQL types arrive as plain strings without per-type decoders.
+    // - Works for SELECT, DML, DDL alike.
+    use tokio_postgres::SimpleQueryMessage;
 
-    if is_query {
-        // Use simple_query (text protocol) so ALL PostgreSQL types — timestamps,
-        // UUIDs, numerics, inet, etc. — arrive as plain strings without needing
-        // per-type Rust decoders.
-        use tokio_postgres::SimpleQueryMessage;
+    let msgs = client.simple_query(sql).await?;
 
-        let msgs = client.simple_query(sql).await?;
-        let mut columns: Vec<String> = vec![];
-        let mut rows = vec![];
+    // Buffers for the statement currently being accumulated.
+    let mut cur_cols: Vec<String> = vec![];
+    let mut cur_rows: Vec<Vec<crate::db::query::CellValue>> = vec![];
 
-        for msg in msgs {
-            if let SimpleQueryMessage::Row(row) = msg {
-                if columns.is_empty() {
-                    columns =
-                        row.columns().iter().map(|c| c.name().to_owned()).collect();
+    // Keep the last SELECT result; accumulate row counts for DML/DDL.
+    let mut last_columns: Vec<String> = vec![];
+    let mut last_rows: Vec<Vec<crate::db::query::CellValue>> = vec![];
+    let mut rows_affected: Option<u64> = None;
+    let mut had_select = false;
+
+    for msg in msgs {
+        match msg {
+            SimpleQueryMessage::Row(row) => {
+                if cur_cols.is_empty() {
+                    cur_cols = row.columns().iter().map(|c| c.name().to_owned()).collect();
                 }
-                let cells = (0..columns.len())
+                let cells = (0..cur_cols.len())
                     .map(|i| match row.get(i) {
                         None => crate::db::query::CellValue::Null,
                         Some(s) => parse_text_cell(s),
                     })
                     .collect();
-                rows.push(cells);
+                cur_rows.push(cells);
+            }
+            SimpleQueryMessage::CommandComplete(tag) => {
+                if !cur_rows.is_empty() || !cur_cols.is_empty() {
+                    // This statement returned rows — save as the latest result.
+                    last_columns = std::mem::take(&mut cur_cols);
+                    last_rows = std::mem::take(&mut cur_rows);
+                    had_select = true;
+                } else {
+                    cur_cols.clear();
+                    cur_rows.clear();
+                    // CommandComplete carries the affected-row count directly.
+                    rows_affected = Some(rows_affected.unwrap_or(0) + tag);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if had_select {
+        return Ok(QueryResult { columns: last_columns, rows: last_rows, rows_affected: None, elapsed_ms: 0.0 });
+    }
+
+    // No rows were received. If the SQL was a single SELECT-like statement that
+    // returned 0 rows, simple_query never emits a RowDescription message, so we
+    // lost the column names.  Use prepare() to recover them without re-executing.
+    let stmts: Vec<&str> = sql.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if stmts.len() == 1 {
+        let lower = stmts[0].to_lowercase();
+        let is_select_like = lower.starts_with("select")
+            || lower.starts_with("with")
+            || lower.starts_with("table")
+            || lower.starts_with("values")
+            || lower.starts_with("show")
+            || lower.starts_with("explain");
+
+        if is_select_like {
+            if let Ok(stmt) = client.prepare(stmts[0]).await {
+                let columns: Vec<String> =
+                    stmt.columns().iter().map(|c| c.name().to_owned()).collect();
+                if !columns.is_empty() {
+                    return Ok(QueryResult { columns, rows: vec![], rows_affected: None, elapsed_ms: 0.0 });
+                }
             }
         }
-
-        Ok(QueryResult { columns, rows, rows_affected: None, elapsed_ms: 0.0 })
-    } else {
-        let n = client.execute(sql, &[]).await?;
-        Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: Some(n),
-            elapsed_ms: 0.0,
-        })
     }
+
+    Ok(QueryResult { columns: vec![], rows: vec![], rows_affected, elapsed_ms: 0.0 })
 }
 
 fn export_csv(result: &QueryResult, path: &str) -> Result<()> {

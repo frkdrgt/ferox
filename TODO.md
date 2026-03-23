@@ -17,12 +17,19 @@
 
 ### Eksik Küçük Özellikler
 - [ ] Bağlantı dialog'unda "Test Connection" butonu (bağlan + ping + kapat)
-- [ ] Profil silme (Connection menüsünden)
-- [ ] Schema tree'de F5 ile yenileme (cache temizle + reload)
+- [x] Profil silme (Connection menüsünden `×` butonu) ✓
+- [x] Bağlantı dialog'unda Cancel butonu çalışmıyordu — düzeltildi ✓
+- [x] Schema tree'de F5 ile yenileme (cache temizle + reload) ✓
 - [ ] Sorgu editöründe Ctrl+A ile tümünü seç
 - [ ] Sonuç tablosunda hücreye çift tık → tam değeri popup'ta göster (uzun text için)
 - [ ] NULL değerlere özel renk tercihini config'e kaydet
 - [x] Tab başlığında aktif DB adını göster ✓
+
+### UI Modernizasyon ✓
+- [x] JetBrains Darcula renk paleti (`configure_style()` — `#2b2b2b` panel, `#4e9fde` accent)
+- [x] Toolbar: Run yeşil, Cancel kırmızı, buton grupları separator ile ayrıldı
+- [x] Tab bar: aktif tab altında mavi çizgi göstergesi, Frame arka planı
+- [x] Sidebar: section badge'leri yuvarlak pill, hover rengi güncellendi, seçim çubuğu 3px mavi
 
 ### Performans
 - [x] Schema tree'de TTL-based cache (60 saniye) — F5 ile manuel refresh de ✓
@@ -44,8 +51,8 @@
 ## Gelecek Fikirler (Scope dışı şimdilik)
 
 - [x] Çoklu sekme (tab) — aynı anda birden fazla sorgu editörü
-- [ ] Otomatik tamamlama (tablo/sütun adları)
-- [ ] ER diyagramı görünümü
-- [ ] SSH tunnel desteği
+- [x] Otomatik tamamlama (tablo/sütun adları)
+- [x] ER diyagramı görünümü
+- [x] SSH tunnel desteği
 - [x] Sorgu planı görselleştirme (EXPLAIN ANALYZE) ✓
 - [x] Tablo verisi düzenleme (inline edit + UPDATE) ✓

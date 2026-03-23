@@ -13,6 +13,8 @@ pub struct TableOutput {
     pub sort_changed: Option<(String, bool)>,
     /// Cell double-clicked in browse mode — (display_row, col_idx)
     pub cell_double_clicked: Option<(usize, usize)>,
+    /// Cell single-clicked — (display_row, col_idx)
+    pub cell_clicked: Option<(usize, usize)>,
     /// Edit committed with Enter — (display_row, col_idx, new_value)
     pub edit_committed: Option<(usize, usize, String)>,
     pub edit_cancelled: bool,
@@ -23,11 +25,14 @@ pub struct TableOutput {
 pub struct ResultTable<'a> {
     result: &'a QueryResult,
     pub selected_row: Option<usize>,
+    pub selected_cell: Option<(usize, usize)>,
     pub sort_col: Option<usize>,
     pub sort_asc: bool,
     pub sorted_indices: Vec<usize>,
     /// When true, skip client-side sort; caller re-queries DB.
     pub db_sort_mode: bool,
+    /// Client-side text filter applied to all cell values.
+    pub filter_text: String,
     // ── Inline edit (set by caller, read back after show()) ──────────────────
     /// Display-row being edited (None = not editing).
     pub edit_row: Option<usize>,
@@ -44,10 +49,12 @@ impl<'a> ResultTable<'a> {
         Self {
             result,
             selected_row: None,
+            selected_cell: None,
             sort_col: None,
             sort_asc: true,
             sorted_indices,
             db_sort_mode: false,
+            filter_text: String::new(),
             edit_row: None,
             edit_col: None,
             edit_value: String::new(),
@@ -65,7 +72,6 @@ impl<'a> ResultTable<'a> {
             return TableOutput::default();
         }
 
-        let row_count = self.sorted_indices.len();
         let col_count = self.result.columns.len();
 
         let col_width = (ui.available_width() / col_count as f32)
@@ -96,8 +102,25 @@ impl<'a> ResultTable<'a> {
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
 
+        // Apply client-side filter on sorted_indices (does not mutate sorted_indices)
+        let display_indices: Vec<usize> = if !self.filter_text.is_empty() {
+            let f = self.filter_text.to_lowercase();
+            sorted_indices
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    self.result.rows[i]
+                        .iter()
+                        .any(|cell| cell.to_string().to_lowercase().contains(&f))
+                })
+                .collect()
+        } else {
+            sorted_indices.clone()
+        };
+
         let mut sort_changed: Option<(usize, bool)> = None;
         let mut cell_double_clicked: Option<(usize, usize)> = None;
+        let mut cell_clicked: Option<(usize, usize)> = None;
         let mut edit_committed_flag = false;
         let mut edit_cancelled_flag = false;
 
@@ -124,9 +147,9 @@ impl<'a> ResultTable<'a> {
                 }
             })
             .body(|body| {
-                body.rows(20.0, row_count, |mut row| {
+                body.rows(20.0, display_indices.len(), |mut row| {
                     let display_idx = row.index();
-                    let actual_idx = sorted_indices[display_idx];
+                    let actual_idx = display_indices[display_idx];
                     let row_data = &self.result.rows[actual_idx];
 
                     row.set_selected(selected_row == Some(display_idx));
@@ -169,6 +192,8 @@ impl<'a> ResultTable<'a> {
                                 render_cell(ui, cell);
                                 if cell_resp.double_clicked() {
                                     cell_double_clicked = Some((display_idx, col_idx));
+                                } else if cell_resp.clicked() {
+                                    cell_clicked = Some((actual_idx, col_idx));
                                 }
                             }
                         });
@@ -192,6 +217,7 @@ impl<'a> ResultTable<'a> {
             }
             return TableOutput {
                 sort_changed: Some((self.result.columns[col].clone(), asc)),
+                cell_clicked,
                 ..Default::default()
             };
         }
@@ -214,6 +240,7 @@ impl<'a> ResultTable<'a> {
         TableOutput {
             sort_changed: None,
             cell_double_clicked,
+            cell_clicked,
             edit_committed,
             edit_cancelled: edit_cancelled_flag,
         }
