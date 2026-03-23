@@ -617,17 +617,17 @@ impl TabManager {
                             }
                             label_r.context_menu(|ui| {
                                 if tab_count > 1 {
-                                    if ui.button("Bu tabı kapat").clicked() {
+                                    if ui.button("Close tab").clicked() {
                                         to_close = Some(tab_i);
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("Diğer tabları kapat").clicked() {
+                                    if ui.button("Close other tabs").clicked() {
                                         ctx_action = Some(TabContextAction::CloseOthers(tab_i));
                                         ui.close_menu();
                                     }
                                 }
-                                if ui.button("Tüm tabları kapat").clicked() {
+                                if ui.button("Close all tabs").clicked() {
                                     ctx_action = Some(TabContextAction::CloseAll);
                                     ui.close_menu();
                                 }
