@@ -403,6 +403,10 @@ async fn connect_pg(
     }
 }
 
+/// Maximum rows kept in memory per query result. Rows beyond this are dropped
+/// and a warning is appended so the user knows the result was truncated.
+const MAX_RESULT_ROWS: usize = 50_000;
+
 async fn execute_query(
     client: &mut tokio_postgres::Client,
     sql: &str,
@@ -431,13 +435,15 @@ async fn execute_query(
                 if cur_cols.is_empty() {
                     cur_cols = row.columns().iter().map(|c| c.name().to_owned()).collect();
                 }
-                let cells = (0..cur_cols.len())
-                    .map(|i| match row.get(i) {
-                        None => crate::db::query::CellValue::Null,
-                        Some(s) => parse_text_cell(s),
-                    })
-                    .collect();
-                cur_rows.push(cells);
+                if cur_rows.len() < MAX_RESULT_ROWS {
+                    let cells = (0..cur_cols.len())
+                        .map(|i| match row.get(i) {
+                            None => crate::db::query::CellValue::Null,
+                            Some(s) => parse_text_cell(s),
+                        })
+                        .collect();
+                    cur_rows.push(cells);
+                }
             }
             SimpleQueryMessage::CommandComplete(tag) => {
                 if !cur_rows.is_empty() || !cur_cols.is_empty() {

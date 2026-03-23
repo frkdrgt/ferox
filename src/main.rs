@@ -13,9 +13,11 @@ fn main() -> anyhow::Result<()> {
     // Panic hook + startup log — must be first.
     logger::setup();
 
-    // Initialize tokio runtime on a separate thread pool for DB operations
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    // Single-threaded tokio runtime — the DB worker creates its own
+    // current_thread runtime inside its std::thread, so no worker threads
+    // are needed here. This guard just makes tokio::Handle::current() work
+    // if any library code calls it from the main thread.
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 

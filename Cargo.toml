@@ -10,18 +10,18 @@ name = "ferox"
 path = "src/main.rs"
 
 [dependencies]
-# GUI
-eframe = { version = "0.27", features = ["default"] }
-egui = "0.27"
-egui_extras = { version = "0.27" }
+# GUI — accesskit (screen-reader support) disabled to save RAM
+eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts"] }
+egui = { version = "0.27", default-features = false, features = ["default_fonts"] }
+egui_extras = { version = "0.27", default-features = false }
 
-# PostgreSQL
-tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+# PostgreSQL — type-conversion features not needed (simple_query returns plain strings)
+tokio-postgres = { version = "0.7" }
 native-tls = "0.2"
 postgres-native-tls = "0.5"
 
-# Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Async runtime — rt-multi-thread not needed; DB worker uses its own current_thread rt
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 
 # Config / serialization
 serde = { version = "1", features = ["derive"] }
@@ -31,6 +31,7 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
 
 
 # Native file dialog
