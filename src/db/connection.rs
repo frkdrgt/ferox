@@ -131,7 +131,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::Schemas(schemas));
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -144,7 +144,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::Tables { schema, tables });
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -189,7 +189,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::QueryResult(result));
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 } else {
@@ -204,7 +204,8 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::DdlDone);
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let err = anyhow::anyhow!(e);
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&err)));
                         }
                     }
                 } else {
@@ -232,7 +233,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         },
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -250,7 +251,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         },
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -286,7 +287,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                         Err(e) => {
                             // Auto-rollback on error to keep connection clean
                             let _ = c.simple_query("ROLLBACK").await;
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                             let _ = evt_tx.send(DbEvent::TransactionClosed);
                         }
                     }
@@ -299,7 +300,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                 if let Some(c) = &mut client {
                     match c.simple_query("COMMIT").await {
                         Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
-                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
                     }
                 }
             }
@@ -308,7 +309,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                 if let Some(c) = &mut client {
                     match c.simple_query("ROLLBACK").await {
                         Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
-                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
                     }
                 }
             }
@@ -318,7 +319,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                     let sql = format!("SELECT pg_terminate_backend({pid}::int)");
                     match c.simple_query(&sql).await {
                         Ok(_) => { let _ = evt_tx.send(DbEvent::KillDone(pid)); }
-                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
                     }
                 }
             }
@@ -330,7 +331,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::ErDiagramData { schema, tables });
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -499,6 +500,22 @@ async fn execute_query(
     }
 
     Ok(QueryResult { columns: vec![], rows: vec![], rows_affected, elapsed_ms: 0.0 })
+}
+
+/// Format an anyhow error as a human-readable string.
+/// For tokio-postgres `DbError`s the raw string looks like
+/// `db error: ERROR: relation "x" does not exist` — we strip the redundant
+/// prefix and append DETAIL / HINT lines when available.
+fn fmt_pg_error(e: &anyhow::Error) -> String {
+    if let Some(pg) = e.downcast_ref::<tokio_postgres::Error>() {
+        if let Some(db) = pg.as_db_error() {
+            let mut s = db.message().to_owned();
+            if let Some(d) = db.detail() { s.push_str(&format!("\nDetail: {d}")); }
+            if let Some(h) = db.hint()   { s.push_str(&format!("\nHint: {h}")); }
+            return s;
+        }
+    }
+    e.to_string()
 }
 
 fn export_csv(result: &QueryResult, path: &str) -> Result<()> {

@@ -937,7 +937,8 @@ impl QueryPanel {
                                 })
                                 .inner_margin(egui::Margin::symmetric(6.0, 4.0))
                                 .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
+                                    // Header row: icon + timestamp
+                                    ui.horizontal(|ui| {
                                         ui.colored_label(color, icon);
                                         ui.label(
                                             egui::RichText::new(&time_str)
@@ -945,16 +946,29 @@ impl QueryPanel {
                                                 .monospace()
                                                 .color(egui::Color32::GRAY),
                                         );
+                                    });
+                                    // Message body — first line is the main message,
+                                    // subsequent lines (Detail: / Hint:) are rendered dimmer.
+                                    let mut lines = entry.text.splitn(2, '\n');
+                                    let main_line = lines.next().unwrap_or("");
+                                    let rest      = lines.next().unwrap_or("");
+                                    ui.add_space(1.0);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(main_line).color(color),
+                                        )
+                                        .wrap(true),
+                                    );
+                                    if !rest.is_empty() {
                                         ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(&entry.text)
-                                                    .color(color)
-                                                    .monospace()
-                                                    .small(),
+                                                egui::RichText::new(rest)
+                                                    .small()
+                                                    .color(egui::Color32::from_gray(160)),
                                             )
                                             .wrap(true),
                                         );
-                                    });
+                                    }
                                 });
                             ui.add_space(2.0);
                         }

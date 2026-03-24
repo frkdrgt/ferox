@@ -175,12 +175,17 @@ impl JoinBuilder {
                     .selected_text(schema_label)
                     .width(110.0)
                     .show_ui(ui, |ui| {
-                        for (i, (s, _)) in self.available.iter().enumerate() {
-                            if ui.selectable_label(self.add_schema_idx == i, s.as_str()).clicked() {
-                                self.add_schema_idx = i;
-                                self.add_table_idx  = 0;
-                            }
-                        }
+                        ScrollArea::vertical()
+                            .max_height(300.0)
+                            .id_source("jb_add_schema_scroll")
+                            .show(ui, |ui| {
+                                for (i, (s, _)) in self.available.iter().enumerate() {
+                                    if ui.selectable_label(self.add_schema_idx == i, s.as_str()).clicked() {
+                                        self.add_schema_idx = i;
+                                        self.add_table_idx  = 0;
+                                    }
+                                }
+                            });
                     });
 
                 let tables_in_schema = self.available.get(self.add_schema_idx)
@@ -191,11 +196,16 @@ impl JoinBuilder {
                     .selected_text(table_label)
                     .width(160.0)
                     .show_ui(ui, |ui| {
-                        for (i, (t, _)) in tables_in_schema.iter().enumerate() {
-                            if ui.selectable_label(self.add_table_idx == i, t.as_str()).clicked() {
-                                self.add_table_idx = i;
-                            }
-                        }
+                        ScrollArea::vertical()
+                            .max_height(300.0)
+                            .id_source("jb_add_table_scroll")
+                            .show(ui, |ui| {
+                                for (i, (t, _)) in tables_in_schema.iter().enumerate() {
+                                    if ui.selectable_label(self.add_table_idx == i, t.as_str()).clicked() {
+                                        self.add_table_idx = i;
+                                    }
+                                }
+                            });
                     });
 
                 if ui.button("＋  Add Table").clicked() {

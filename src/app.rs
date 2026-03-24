@@ -908,4 +908,31 @@ fn configure_style(ctx: &egui::Context) {
     style.text_styles.insert(TextStyle::Monospace,  FontId::monospace(13.0));
 
     ctx.set_style(style);
+
+    // ── Windows symbol font fallback ─────────────────────────────────────────
+    // egui's bundled Ubuntu/Hack fonts lack many Unicode symbol codepoints
+    // (▶ ✕ ✎ ↺ ⟳ ＋ etc.).  On Windows there is no automatic OS-level fallback,
+    // so we load Segoe UI Symbol + Segoe UI Emoji from the system fonts directory
+    // and append them as fallbacks for every font family.
+    #[cfg(target_os = "windows")]
+    {
+        let mut fonts = egui::FontDefinitions::default();
+        for path in &[
+            "C:/Windows/Fonts/seguisym.ttf",
+            "C:/Windows/Fonts/seguiemj.ttf",
+        ] {
+            if let Ok(data) = std::fs::read(path) {
+                let name = std::path::Path::new(path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                fonts.font_data.insert(name.clone(), egui::FontData::from_owned(data));
+                for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                    fonts.families.entry(family).or_default().push(name.clone());
+                }
+            }
+        }
+        ctx.set_fonts(fonts);
+    }
 }
