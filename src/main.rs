@@ -4,14 +4,20 @@ mod app;
 mod config;
 mod db;
 mod history;
+mod logger;
 mod ui;
 
 use app::PgClientApp;
 
 fn main() -> anyhow::Result<()> {
-    // Initialize tokio runtime on a separate thread pool for DB operations
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    // Panic hook + startup log — must be first.
+    logger::setup();
+
+    // Single-threaded tokio runtime — the DB worker creates its own
+    // current_thread runtime inside its std::thread, so no worker threads
+    // are needed here. This guard just makes tokio::Handle::current() work
+    // if any library code calls it from the main thread.
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
@@ -26,19 +32,28 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "pgclient",
         native_options,
         Box::new(|cc| Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))
+    );
+
+    match &result {
+        Ok(_) => logger::write_entry("INFO", "=== Ferox exited normally ==="),
+        Err(e) => logger::error(&format!("eframe fatal error: {e}")),
+    }
+
+    result.map_err(|e| anyhow::anyhow!("eframe error: {e}"))
 }
 
 fn load_icon() -> egui::IconData {
-    // Placeholder icon — replace with actual icon bytes in production
-    egui::IconData {
-        rgba: vec![0u8; 32 * 32 * 4],
-        width: 32,
-        height: 32,
-    }
+    let bytes = include_bytes!("../assets/logo.png");
+    // Resize to 256×256 — winit on Windows ignores icons larger than this for
+    // the taskbar (ICON_BIG). The title bar uses the same data scaled down.
+    let img = image::load_from_memory(bytes)
+        .expect("Failed to decode logo.png")
+        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    let (width, height) = img.dimensions();
+    egui::IconData { rgba: img.into_raw(), width, height }
 }

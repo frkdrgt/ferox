@@ -3,12 +3,25 @@ use std::sync::mpsc::Sender;
 
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
 use crate::ui::result_table::ResultTable;
 use crate::ui::syntax::highlight_sql;
 
 const PAGE_SIZE: usize = 100;
 const MAX_LOG: usize = 200;
+
+// ── UTF-8 index helpers ────────────────────────────────────────────────────────
+
+/// Convert a char index (egui `CCursor::index`) to a byte offset in `text`.
+fn char_idx_to_byte(text: &str, char_idx: usize) -> usize {
+    text.char_indices().nth(char_idx).map(|(i, _)| i).unwrap_or(text.len())
+}
+
+/// Convert a byte offset to a char index (suitable for `CCursor::new`).
+fn byte_to_char_idx(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset.min(text.len())].chars().count()
+}
 
 // ── Message log ───────────────────────────────────────────────────────────────
 
@@ -47,11 +60,13 @@ struct CellPopup {
     /// Position in the result table — used if user clicks "Edit".
     display_row: usize,
     col_idx: usize,
+    /// Actual row index in QueryResult (after sort mapping).
+    actual_row: usize,
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 enum PanelTab {
     #[default]
     Results,
@@ -131,6 +146,14 @@ pub struct QueryPanel {
     pending_refresh: bool,
     /// Floating popup showing the full value of a double-clicked cell.
     cell_popup: Option<CellPopup>,
+    /// Client-side filter text for the result table.
+    result_filter: String,
+    /// Currently selected cell (display_row, col_idx) for Ctrl+C.
+    selected_cell: Option<(usize, usize)>,
+    // ── Autocomplete ─────────────────────────────────────────────────────────
+    autocomplete: Autocomplete,
+    completion_tables: Vec<String>,
+    completion_columns: Vec<String>,
 }
 
 impl Default for QueryPanel {
@@ -153,13 +176,33 @@ impl Default for QueryPanel {
             pk_cols: HashMap::new(),
             pending_refresh: false,
             cell_popup: None,
+            result_filter: String::new(),
+            selected_cell: None,
+            autocomplete: Autocomplete::default(),
+            completion_tables: Vec::new(),
+            completion_columns: Vec::new(),
         }
     }
 }
 
 impl QueryPanel {
+    pub fn set_completion_data(&mut self, tables: Vec<String>, columns: Vec<String>) {
+        self.completion_tables = tables;
+        self.completion_columns = columns;
+    }
+
     pub fn current_sql(&self) -> &str {
         &self.sql
+    }
+
+    /// True if this panel has no SQL, no result, and is not browsing a table.
+    pub fn is_empty(&self) -> bool {
+        self.sql.trim().is_empty() && self.result.is_none() && self.browse.is_none()
+    }
+
+    /// The (schema, table) this panel is currently browsing, if any.
+    pub fn browsing_table(&self) -> Option<(&str, &str)> {
+        self.browse.as_ref().map(|b| (b.schema.as_str(), b.table.as_str()))
     }
 
     pub fn set_sql(&mut self, sql: String) {
@@ -225,6 +268,7 @@ impl QueryPanel {
         }
 
         self.result = Some(result);
+        self.selected_cell = None;
         if self.result.as_ref().map(|r| !r.columns.is_empty()).unwrap_or(false) {
             self.active_tab = PanelTab::Results;
         }
@@ -327,13 +371,19 @@ impl QueryPanel {
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // ── Palette ──────────────────────────────────────────────
+                    let col_green = egui::Color32::from_rgb(73, 156, 84);   // #499c54
+                    let col_red   = egui::Color32::from_rgb(199, 84, 80);   // #c75450
+                    let col_dim   = egui::Color32::from_rgb(76, 80, 82);    // #4c5052
+
+                    // ── Group 1: Execute ──────────────────────────────────────
                     let run_label = if self.running { "⏳ Running…" } else { "▶ Run" };
+                    let run_fill  = if self.running { col_dim } else { col_green };
                     if ui
-                        .add_enabled(!self.running, egui::Button::new(run_label))
+                        .add_enabled(!self.running, egui::Button::new(run_label).fill(run_fill))
                         .clicked()
                         && !self.sql.trim().is_empty()
                     {
-                        // Free-form run exits browse mode
                         self.browse = None;
                         self.browse_result = false;
                         history.push(self.sql.clone());
@@ -342,8 +392,9 @@ impl QueryPanel {
                         let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
                     }
 
+                    let cancel_fill = if self.running { col_red } else { col_dim };
                     if ui
-                        .add_enabled(self.running, egui::Button::new("✕ Cancel"))
+                        .add_enabled(self.running, egui::Button::new("■ Cancel").fill(cancel_fill))
                         .clicked()
                     {
                         let _ = db_tx.send(DbCommand::CancelQuery);
@@ -371,13 +422,14 @@ impl QueryPanel {
 
                     ui.separator();
 
-                    if ui.button("⬆ Hist").clicked() {
+                    // ── Group 2: History ──────────────────────────────────────
+                    if ui.button("⬆ Hist").on_hover_text("Previous query (↑)").clicked() {
                         if let Some(entry) = history.prev() {
                             self.sql = entry.to_owned();
                             self.browse = None;
                         }
                     }
-                    if ui.button("⬇").clicked() {
+                    if ui.button("⬇").on_hover_text("Next query (↓)").clicked() {
                         match history.next() {
                             Some(entry) => {
                                 self.sql = entry.to_owned();
@@ -388,7 +440,9 @@ impl QueryPanel {
                     }
 
                     ui.separator();
-                    if ui.button("Format")
+
+                    // ── Group 3: Format ───────────────────────────────────────
+                    if ui.button("⇄ Format")
                         .on_hover_text("Format SQL (Shift+Alt+F)")
                         .clicked()
                         || ui.input(|i| {
@@ -409,25 +463,148 @@ impl QueryPanel {
                     }
 
                     ui.separator();
-                    if ui.button("CSV").clicked() {
+
+                    // ── Group 4: Export ───────────────────────────────────────
+                    if ui.button("CSV").on_hover_text("Export as CSV…").clicked() {
                         self.trigger_export_csv(db_tx);
                     }
-                    if ui.button("JSON").clicked() {
+                    if ui.button("JSON").on_hover_text("Export as JSON…").clicked() {
                         self.trigger_export_json(db_tx);
                     }
 
                 });
+
+                // Ctrl+Space: force-show autocomplete
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space)) {
+                    self.autocomplete.force_show();
+                }
+
+                // Read cursor from the PREVIOUS frame before the TextEdit re-renders.
+                // We need this for Tab acceptance (Tab must be consumed before the
+                // TextEdit sees it, otherwise egui cycles focus to the next widget).
+                let prev_cursor_idx: usize = egui::TextEdit::load_state(
+                    ui.ctx(),
+                    egui::Id::new("ferox_sql_editor"),
+                )
+                .and_then(|s| s.cursor.char_range())
+                .map(|r| r.primary.index)
+                .unwrap_or(self.sql.len());
+
+                // Consume Enter (no modifiers) BEFORE the TextEdit if autocomplete is
+                // visible. Tab cannot be intercepted reliably because egui cycles
+                // focus at the context level before any widget code runs.
+                let enter_accepted = self.autocomplete.is_visible()
+                    && ui.input_mut(|i| {
+                        // Only plain Enter — Ctrl+Enter still runs the query.
+                        !i.modifiers.any()
+                            && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    });
 
                 let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
                     let job = highlight_sql(ui, text, wrap_width);
                     ui.fonts(|f| f.layout_job(job))
                 };
                 let editor = egui::TextEdit::multiline(&mut self.sql)
+                    .id(egui::Id::new("ferox_sql_editor"))
                     .layouter(&mut layouter)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Enter SQL… (F5 or Ctrl+Enter to execute)");
-                let resp = ui.add_sized([ui.available_width(), editor_height], editor);
+                    .hint_text("Enter SQL… (Ctrl+Enter to run, Enter to accept autocomplete)");
+                // Wrap in a ScrollArea so the layout height is strictly capped at
+                // editor_height. Without this, TextEdit grows its layout allocation
+                // as content grows, pushing the result tab bar off-screen.
+                let scroll_out = egui::ScrollArea::vertical()
+                    .id_source("sql_editor_scroll")
+                    .max_height(editor_height)
+                    .min_scrolled_height(editor_height)
+                    .show(ui, |ui| ui.add(editor));
+                let resp = scroll_out.inner;
+
+                // Handle Enter acceptance (consumed before the TextEdit).
+                if enter_accepted {
+                    if let Some(accepted) = self.autocomplete.accept() {
+                        // word_start is a byte offset; convert prev_cursor_idx (char) to byte.
+                        let word_start = self.autocomplete.word_start;
+                        let prev_byte = char_idx_to_byte(&self.sql, prev_cursor_idx);
+                        self.sql.replace_range(word_start..prev_byte, &accepted);
+                        let new_char = byte_to_char_idx(&self.sql, word_start + accepted.len());
+                        if let Some(mut state) = egui::TextEdit::load_state(
+                            ui.ctx(),
+                            egui::Id::new("ferox_sql_editor"),
+                        ) {
+                            let ccursor = egui::text::CCursor::new(new_char);
+                            state.cursor.set_char_range(Some(
+                                egui::text::CCursorRange::one(ccursor),
+                            ));
+                            state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
+                        }
+                    }
+                    resp.request_focus();
+                }
+
+                // Get cursor position from this frame's TextEdit state.
+                let cursor_idx: usize = egui::TextEdit::load_state(
+                    ui.ctx(),
+                    egui::Id::new("ferox_sql_editor"),
+                )
+                .and_then(|s| s.cursor.char_range())
+                .map(|r| r.primary.index)
+                .unwrap_or(self.sql.len());
+
+                // Update autocomplete suggestions.
+                let completion_tables = self.completion_tables.clone();
+                let completion_columns = self.completion_columns.clone();
+                self.autocomplete.update(
+                    &self.sql,
+                    cursor_idx,
+                    &completion_tables,
+                    &completion_columns,
+                );
+                if resp.changed() && !self.autocomplete.suggestions.is_empty() {
+                    self.autocomplete.visible = true;
+                }
+
+                // Dismiss autocomplete when the editor loses focus so the popup
+                // Area (Order::Foreground) doesn't block clicks on the result table.
+                if !resp.has_focus() {
+                    self.autocomplete.dismiss();
+                }
+
+                // Remaining keyboard navigation (only when editor has focus).
+                if self.autocomplete.is_visible() && resp.has_focus() {
+                    if ui.input_mut(|i| {
+                        i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                    }) {
+                        self.autocomplete.dismiss();
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                        self.autocomplete.select_next();
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                        self.autocomplete.select_prev();
+                    }
+                }
+
+                // Show autocomplete popup; handle mouse-click acceptance.
+                let editor_rect = scroll_out.inner_rect;
+                if let Some(accepted) = self.autocomplete.show(ui, editor_rect) {
+                    // word_start is a byte offset; convert cursor_idx (char) to byte.
+                    let word_start = self.autocomplete.word_start;
+                    let cursor_byte = char_idx_to_byte(&self.sql, cursor_idx);
+                    self.sql.replace_range(word_start..cursor_byte, &accepted);
+                    let new_char = byte_to_char_idx(&self.sql, word_start + accepted.len());
+                    if let Some(mut state) = egui::TextEdit::load_state(
+                        ui.ctx(),
+                        egui::Id::new("ferox_sql_editor"),
+                    ) {
+                        let ccursor = egui::text::CCursor::new(new_char);
+                        state.cursor.set_char_range(Some(
+                            egui::text::CCursorRange::one(ccursor),
+                        ));
+                        state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
+                    }
+                    resp.request_focus();
+                }
 
                 if resp.has_focus()
                     && ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter))
@@ -477,37 +654,133 @@ impl QueryPanel {
         }
 
         // ── Result tabs ──────────────────────────────────────────────────────
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.active_tab, PanelTab::Results, "Results");
-            if self.explain_plan.is_some() {
-                ui.selectable_value(
-                    &mut self.active_tab,
-                    PanelTab::Plan,
-                    egui::RichText::new("⚡ Plan").color(egui::Color32::from_rgb(100, 200, 255)),
-                );
-            }
-            let error_count = self.log.iter().filter(|e| e.kind == LogKind::Error).count();
-            let msg_label = if error_count > 0 {
-                egui::RichText::new(format!("Messages ({})", error_count))
-                    .color(egui::Color32::from_rgb(220, 80, 80))
-            } else {
-                egui::RichText::new("Messages")
-            };
-            ui.selectable_value(&mut self.active_tab, PanelTab::Messages, msg_label);
-            ui.selectable_value(&mut self.active_tab, PanelTab::History, "History");
-        });
+        let tab_bg    = egui::Color32::from_rgb(49, 51, 53);   // #313335
+        let col_blue  = egui::Color32::from_rgb(78, 159, 222); // #4e9fde
+        let text_active = egui::Color32::from_rgb(169, 183, 198); // #a9b7c6
+        let text_dim    = egui::Color32::from_rgb(110, 123, 139); // #6e7b8b
+
+        egui::Frame::none()
+            .fill(tab_bg)
+            .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let tabs: &[(PanelTab, &str, Option<egui::Color32>)] = &[
+                        (PanelTab::Results, "Results", None),
+                        (PanelTab::History, "History", None),
+                    ];
+
+                    for (tab, label, _color) in tabs {
+                        let is_active = self.active_tab == *tab;
+                        let text = egui::RichText::new(*label)
+                            .color(if is_active { text_active } else { text_dim });
+                        let btn = egui::Button::new(text)
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE);
+                        let resp = ui.add(btn);
+                        if is_active {
+                            let r = resp.rect;
+                            ui.painter().line_segment(
+                                [egui::pos2(r.min.x, r.max.y), egui::pos2(r.max.x, r.max.y)],
+                                egui::Stroke::new(2.0, col_blue),
+                            );
+                        }
+                        if resp.clicked() {
+                            self.active_tab = tab.clone();
+                        }
+                    }
+
+                    // Explain tab — only when plan exists
+                    if self.explain_plan.is_some() {
+                        let is_active = self.active_tab == PanelTab::Plan;
+                        let text = egui::RichText::new("⚡ Plan")
+                            .color(if is_active { egui::Color32::from_rgb(100, 200, 255) } else { text_dim });
+                        let btn = egui::Button::new(text)
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE);
+                        let resp = ui.add(btn);
+                        if is_active {
+                            let r = resp.rect;
+                            ui.painter().line_segment(
+                                [egui::pos2(r.min.x, r.max.y), egui::pos2(r.max.x, r.max.y)],
+                                egui::Stroke::new(2.0, col_blue),
+                            );
+                        }
+                        if resp.clicked() { self.active_tab = PanelTab::Plan; }
+                    }
+
+                    // Messages tab — red badge if errors
+                    {
+                        let error_count = self.log.iter().filter(|e| e.kind == LogKind::Error).count();
+                        let is_active = self.active_tab == PanelTab::Messages;
+                        let label_str = if error_count > 0 {
+                            format!("Messages ({})", error_count)
+                        } else {
+                            "Messages".to_owned()
+                        };
+                        let msg_color = if error_count > 0 {
+                            egui::Color32::from_rgb(220, 80, 80)
+                        } else if is_active { text_active } else { text_dim };
+                        let text = egui::RichText::new(label_str).color(msg_color);
+                        let btn = egui::Button::new(text)
+                            .fill(egui::Color32::TRANSPARENT)
+                            .stroke(egui::Stroke::NONE);
+                        let resp = ui.add(btn);
+                        if is_active {
+                            let r = resp.rect;
+                            ui.painter().line_segment(
+                                [egui::pos2(r.min.x, r.max.y), egui::pos2(r.max.x, r.max.y)],
+                                egui::Stroke::new(2.0, col_blue),
+                            );
+                        }
+                        if resp.clicked() { self.active_tab = PanelTab::Messages; }
+                    }
+                });
+            });
 
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .max_height(results_height)
             .show(ui, |ui| match self.active_tab {
                 PanelTab::Results => {
+                    // ── Filter bar ───────────────────────────────────────────
+                    if self.result.is_some() {
+                        ui.horizontal(|ui| {
+                            let hint = egui::RichText::new("🔍 Filter results…")
+                                .color(egui::Color32::from_rgb(90, 95, 100));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.result_filter)
+                                    .desired_width(220.0)
+                                    .hint_text(hint),
+                            );
+                            if !self.result_filter.is_empty() && ui.small_button("✕").clicked() {
+                                self.result_filter.clear();
+                            }
+                            // Ctrl+C: copy selected cell value (actual_row stored in selected_cell)
+                            if let Some((actual_row, col_idx)) = self.selected_cell {
+                                if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
+                                    if let Some(result) = &self.result {
+                                        let val = result.rows
+                                            .get(actual_row)
+                                            .and_then(|r| r.get(col_idx))
+                                            .map(|c| c.to_string())
+                                            .unwrap_or_default();
+                                        ui.output_mut(|o| o.copied_text = val);
+                                    }
+                                }
+                            }
+                        });
+                    }
+
                     if self.result.is_some() {
                         // ── Build and show table ─────────────────────────────
                         let output = {
                             let result = self.result.as_ref().unwrap();
                             let mut table = ResultTable::new(result);
                             table.db_sort_mode = self.browse.is_some();
+                            table.filter_text = self.result_filter.clone();
+                            if let Some(cell) = self.selected_cell {
+                                table.selected_cell = Some(cell);
+                            }
 
                             // Restore sort indicator
                             if let Some(state) = &self.browse {
@@ -555,6 +828,11 @@ impl QueryPanel {
                             let _ = db_tx.send(DbCommand::Execute(sql));
                         }
 
+                        // ── Handle cell single-click → track selected cell ───
+                        if let Some((row, col)) = output.cell_clicked {
+                            self.selected_cell = Some((row, col));
+                        }
+
                         // ── Handle cell double-click → open value popup ──────
                         if let Some((row, col)) = output.cell_double_clicked {
                             if let Some(result) = &self.result {
@@ -572,6 +850,7 @@ impl QueryPanel {
                                         value,
                                         display_row: row,
                                         col_idx: col,
+                                        actual_row: sorted_indices[row],
                                     });
                                 }
                             }
@@ -658,7 +937,8 @@ impl QueryPanel {
                                 })
                                 .inner_margin(egui::Margin::symmetric(6.0, 4.0))
                                 .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
+                                    // Header row: icon + timestamp
+                                    ui.horizontal(|ui| {
                                         ui.colored_label(color, icon);
                                         ui.label(
                                             egui::RichText::new(&time_str)
@@ -666,16 +946,29 @@ impl QueryPanel {
                                                 .monospace()
                                                 .color(egui::Color32::GRAY),
                                         );
+                                    });
+                                    // Message body — first line is the main message,
+                                    // subsequent lines (Detail: / Hint:) are rendered dimmer.
+                                    let mut lines = entry.text.splitn(2, '\n');
+                                    let main_line = lines.next().unwrap_or("");
+                                    let rest      = lines.next().unwrap_or("");
+                                    ui.add_space(1.0);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(main_line).color(color),
+                                        )
+                                        .wrap(true),
+                                    );
+                                    if !rest.is_empty() {
                                         ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(&entry.text)
-                                                    .color(color)
-                                                    .monospace()
-                                                    .small(),
+                                                egui::RichText::new(rest)
+                                                    .small()
+                                                    .color(egui::Color32::from_gray(160)),
                                             )
                                             .wrap(true),
                                         );
-                                    });
+                                    }
                                 });
                             ui.add_space(2.0);
                         }
@@ -688,26 +981,38 @@ impl QueryPanel {
                     });
                     ui.separator();
                     let search = self.history_search.to_lowercase();
-                    let entries: Vec<String> = history
-                        .all()
+                    let entries: Vec<crate::history::HistoryEntry> = history
+                        .entries()
                         .iter()
-                        .filter(|e| search.is_empty() || e.to_lowercase().contains(&search))
+                        .filter(|e| {
+                            search.is_empty() || e.sql.to_lowercase().contains(&search)
+                        })
                         .cloned()
                         .rev()
                         .collect();
 
+                    let text_dim = egui::Color32::from_rgb(110, 123, 139);
                     for entry in &entries {
                         let preview: String =
-                            entry.lines().next().unwrap_or("").chars().take(80).collect();
-                        let resp = ui.add(
-                            egui::Label::new(egui::RichText::new(preview).monospace())
-                                .sense(egui::Sense::click()),
-                        );
-                        if resp.double_clicked() {
-                            self.sql = entry.clone();
-                            self.browse = None;
-                        }
-                        resp.on_hover_text(entry.as_str());
+                            entry.sql.lines().next().unwrap_or("").chars().take(72).collect();
+                        let time_str = entry.executed_at.format("%H:%M").to_string();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&time_str)
+                                    .small()
+                                    .monospace()
+                                    .color(text_dim),
+                            );
+                            let resp = ui.add(
+                                egui::Label::new(egui::RichText::new(preview).monospace())
+                                    .sense(egui::Sense::click()),
+                            );
+                            if resp.double_clicked() {
+                                self.sql = entry.sql.clone();
+                                self.browse = None;
+                            }
+                            resp.on_hover_text(entry.sql.as_str());
+                        });
                     }
                 }
             });
@@ -794,6 +1099,40 @@ impl QueryPanel {
                     }
                     if is_browse && ui.button("Edit").clicked() {
                         start_edit = true;
+                    }
+                    // Copy as INSERT statement
+                    if ui.button("Copy as INSERT").on_hover_text("Copy the entire row as an INSERT statement").clicked() {
+                        if let Some(result) = &self.result {
+                            let cols: Vec<&str> =
+                                result.columns.iter().map(|c| c.as_str()).collect();
+                            if let Some(row) = result.rows.get(popup.actual_row) {
+                                let table_name = self
+                                    .browse
+                                    .as_ref()
+                                    .map(|b| b.label())
+                                    .unwrap_or_else(|| "table_name".to_owned());
+                                let col_list = cols
+                                    .iter()
+                                    .map(|c| format!("\"{}\"", c))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let val_list = row
+                                    .iter()
+                                    .map(|c| match c {
+                                        crate::db::query::CellValue::Null => "NULL".to_owned(),
+                                        crate::db::query::CellValue::Boolean(b) => b.to_string(),
+                                        crate::db::query::CellValue::Integer(n) => n.to_string(),
+                                        crate::db::query::CellValue::Float(f) => f.to_string(),
+                                        other => format!("'{}'", other.to_string().replace('\'', "''")),
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let insert = format!(
+                                    "INSERT INTO {table_name} ({col_list}) VALUES ({val_list});"
+                                );
+                                ctx.copy_text(insert);
+                            }
+                        }
                     }
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
@@ -923,3 +1262,6 @@ fn pick_save_path(ext: &str) -> Option<String> {
         .save_file()
         .map(|p| p.to_string_lossy().into_owned())
 }
+
+// ── SQL formatter ─────────────────────────────────────────────────────────────
+

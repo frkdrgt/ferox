@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
-use crate::db::metadata::{self, ColumnInfo, ForeignKeyInfo, IndexInfo, TableInfo};
+use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
 /// Commands sent from the UI thread → DB worker.
@@ -23,6 +23,16 @@ pub enum DbCommand {
     CancelQuery,
     ExportCsv { sql: String, path: String },
     ExportJson { sql: String, path: String },
+    LoadDashboard,
+    LoadErDiagram { schema: String },
+    /// Execute DML inside an explicit BEGIN — keeps connection in transaction.
+    ExecuteSafe(String),
+    /// Commit the open safe-mode transaction.
+    Commit,
+    /// Roll back the open safe-mode transaction.
+    Rollback,
+    /// Terminate a backend process by PID (pg_terminate_backend).
+    KillConnection { pid: String },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -46,6 +56,18 @@ pub enum DbEvent {
     ExportDone(String),
     /// DDL executed successfully.
     DdlDone,
+    /// pg_terminate_backend succeeded for this PID.
+    KillDone(String),
+    DashboardData {
+        table_stats: Vec<TableStat>,
+        connections: Vec<ConnInfo>,
+        index_stats: Vec<IndexStat>,
+    },
+    ErDiagramData { schema: String, tables: Vec<ErTableInfo> },
+    /// A safe-mode transaction was opened (BEGIN succeeded).
+    TransactionOpen,
+    /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
+    TransactionClosed,
 }
 
 /// Handle that owns the DB background thread.
@@ -109,7 +131,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::Schemas(schemas));
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -122,7 +144,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::Tables { schema, tables });
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -167,7 +189,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::QueryResult(result));
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 } else {
@@ -182,7 +204,8 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             let _ = evt_tx.send(DbEvent::DdlDone);
                         }
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let err = anyhow::anyhow!(e);
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&err)));
                         }
                     }
                 } else {
@@ -210,7 +233,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         },
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -228,7 +251,87 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         },
                         Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                        }
+                    }
+                }
+            }
+
+            DbCommand::LoadDashboard => {
+                if let Some(c) = &client {
+                    let ts = metadata::load_table_stats(c).await.unwrap_or_default();
+                    let conns = metadata::load_connections(c).await.unwrap_or_default();
+                    let idxs = metadata::load_index_stats(c).await.unwrap_or_default();
+                    let _ = evt_tx.send(DbEvent::DashboardData {
+                        table_stats: ts,
+                        connections: conns,
+                        index_stats: idxs,
+                    });
+                }
+            }
+
+            DbCommand::ExecuteSafe(sql) => {
+                if let Some(c) = &mut client {
+                    // Open transaction
+                    if let Err(e) = c.simple_query("BEGIN").await {
+                        let _ = evt_tx.send(DbEvent::QueryError(format!("BEGIN failed: {e}")));
+                        continue;
+                    }
+                    let start = Instant::now();
+                    match execute_query(c, &sql).await {
+                        Ok(mut result) => {
+                            result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                            let _ = evt_tx.send(DbEvent::QueryResult(result));
+                            let _ = evt_tx.send(DbEvent::TransactionOpen);
+                        }
+                        Err(e) => {
+                            // Auto-rollback on error to keep connection clean
+                            let _ = c.simple_query("ROLLBACK").await;
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            let _ = evt_tx.send(DbEvent::TransactionClosed);
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::QueryError("Not connected".into()));
+                }
+            }
+
+            DbCommand::Commit => {
+                if let Some(c) = &mut client {
+                    match c.simple_query("COMMIT").await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
+                    }
+                }
+            }
+
+            DbCommand::Rollback => {
+                if let Some(c) = &mut client {
+                    match c.simple_query("ROLLBACK").await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::TransactionClosed); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
+                    }
+                }
+            }
+
+            DbCommand::KillConnection { pid } => {
+                if let Some(c) = &client {
+                    let sql = format!("SELECT pg_terminate_backend({pid}::int)");
+                    match c.simple_query(&sql).await {
+                        Ok(_) => { let _ = evt_tx.send(DbEvent::KillDone(pid)); }
+                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
+                    }
+                }
+            }
+
+            DbCommand::LoadErDiagram { schema } => {
+                if let Some(c) = &client {
+                    match metadata::load_er_diagram(c, &schema).await {
+                        Ok(tables) => {
+                            let _ = evt_tx.send(DbEvent::ErDiagramData { schema, tables });
+                        }
+                        Err(e) => {
+                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
@@ -240,7 +343,35 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
 async fn connect_pg(
     profile: &ConnectionProfile,
 ) -> Result<(tokio_postgres::Client, tokio_postgres::CancelToken)> {
-    let connstr = profile.connection_string();
+    let (effective_host, effective_port) = match &profile.ssh_tunnel {
+        Some(ssh) if ssh.enabled => {
+            let port = super::ssh::establish_tunnel(
+                &ssh.host,
+                ssh.port,
+                &ssh.user,
+                &ssh.auth,
+                &profile.host,
+                profile.port,
+            )
+            .await?;
+            ("127.0.0.1".to_owned(), port)
+        }
+        _ => (profile.host.clone(), profile.port),
+    };
+
+    let connstr = if effective_host != profile.host || effective_port != profile.port {
+        let ssl = match profile.ssl {
+            SslMode::Disable => "disable",
+            SslMode::Prefer => "prefer",
+            SslMode::Require => "require",
+        };
+        format!(
+            "host={} port={} user={} password={} dbname={} sslmode={}",
+            effective_host, effective_port, profile.user, profile.password, profile.database, ssl
+        )
+    } else {
+        profile.connection_string()
+    };
 
     match profile.ssl {
         SslMode::Disable => {
@@ -273,55 +404,118 @@ async fn connect_pg(
     }
 }
 
+/// Maximum rows kept in memory per query result. Rows beyond this are dropped
+/// and a warning is appended so the user knows the result was truncated.
+const MAX_RESULT_ROWS: usize = 50_000;
+
 async fn execute_query(
     client: &mut tokio_postgres::Client,
     sql: &str,
 ) -> Result<QueryResult> {
-    // Detect if this is a SELECT-like statement.
-    let trimmed = sql.trim().to_lowercase();
-    let is_query = trimmed.starts_with("select")
-        || trimmed.starts_with("with")
-        || trimmed.starts_with("table")
-        || trimmed.starts_with("values")
-        || trimmed.starts_with("show")
-        || trimmed.starts_with("explain");
+    // Use simple_query (text protocol) for ALL statements:
+    // - Supports semicolons and multiple statements in one call.
+    // - All PostgreSQL types arrive as plain strings without per-type decoders.
+    // - Works for SELECT, DML, DDL alike.
+    use tokio_postgres::SimpleQueryMessage;
 
-    if is_query {
-        // Use simple_query (text protocol) so ALL PostgreSQL types — timestamps,
-        // UUIDs, numerics, inet, etc. — arrive as plain strings without needing
-        // per-type Rust decoders.
-        use tokio_postgres::SimpleQueryMessage;
+    let msgs = client.simple_query(sql).await?;
 
-        let msgs = client.simple_query(sql).await?;
-        let mut columns: Vec<String> = vec![];
-        let mut rows = vec![];
+    // Buffers for the statement currently being accumulated.
+    let mut cur_cols: Vec<String> = vec![];
+    let mut cur_rows: Vec<Vec<crate::db::query::CellValue>> = vec![];
 
-        for msg in msgs {
-            if let SimpleQueryMessage::Row(row) = msg {
-                if columns.is_empty() {
-                    columns =
-                        row.columns().iter().map(|c| c.name().to_owned()).collect();
+    // Keep the last SELECT result; accumulate row counts for DML/DDL.
+    let mut last_columns: Vec<String> = vec![];
+    let mut last_rows: Vec<Vec<crate::db::query::CellValue>> = vec![];
+    let mut rows_affected: Option<u64> = None;
+    let mut had_select = false;
+
+    for msg in msgs {
+        match msg {
+            SimpleQueryMessage::Row(row) => {
+                if cur_cols.is_empty() {
+                    cur_cols = row.columns().iter().map(|c| c.name().to_owned()).collect();
                 }
-                let cells = (0..columns.len())
-                    .map(|i| match row.get(i) {
-                        None => crate::db::query::CellValue::Null,
-                        Some(s) => parse_text_cell(s),
-                    })
-                    .collect();
-                rows.push(cells);
+                if cur_rows.len() < MAX_RESULT_ROWS {
+                    let cells = (0..cur_cols.len())
+                        .map(|i| match row.get(i) {
+                            None => crate::db::query::CellValue::Null,
+                            Some(s) => parse_text_cell(s),
+                        })
+                        .collect();
+                    cur_rows.push(cells);
+                }
             }
+            SimpleQueryMessage::CommandComplete(tag) => {
+                if !cur_rows.is_empty() || !cur_cols.is_empty() {
+                    // This statement returned rows — save as the latest result.
+                    last_columns = std::mem::take(&mut cur_cols);
+                    last_rows = std::mem::take(&mut cur_rows);
+                    had_select = true;
+                } else {
+                    cur_cols.clear();
+                    cur_rows.clear();
+                    // CommandComplete carries the affected-row count directly.
+                    rows_affected = Some(rows_affected.unwrap_or(0) + tag);
+                }
+            }
+            _ => {}
         }
-
-        Ok(QueryResult { columns, rows, rows_affected: None, elapsed_ms: 0.0 })
-    } else {
-        let n = client.execute(sql, &[]).await?;
-        Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: Some(n),
-            elapsed_ms: 0.0,
-        })
     }
+
+    if had_select {
+        return Ok(QueryResult { columns: last_columns, rows: last_rows, rows_affected: None, elapsed_ms: 0.0 });
+    }
+
+    // No rows were received. If the SQL was a single SELECT-like statement that
+    // returned 0 rows, simple_query never emits a RowDescription message, so we
+    // lost the column names.  Use prepare() to recover them without re-executing.
+    let stmts: Vec<&str> = sql.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if stmts.len() == 1 {
+        let lower = stmts[0].to_lowercase();
+        let is_select_like = lower.starts_with("select")
+            || lower.starts_with("with")
+            || lower.starts_with("table")
+            || lower.starts_with("values")
+            || lower.starts_with("show")
+            || lower.starts_with("explain");
+
+        if is_select_like {
+            if let Ok(stmt) = client.prepare(stmts[0]).await {
+                let columns: Vec<String> =
+                    stmt.columns().iter().map(|c| c.name().to_owned()).collect();
+                if !columns.is_empty() {
+                    return Ok(QueryResult { columns, rows: vec![], rows_affected: None, elapsed_ms: 0.0 });
+                }
+            }
+            // SELECT-like but prepare() failed or returned no columns (e.g. a view
+            // that references a dropped object). Still report as SELECT (no
+            // rows_affected) so the caller doesn't mistake this for DML.
+            return Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None, elapsed_ms: 0.0 });
+        }
+    }
+
+    Ok(QueryResult { columns: vec![], rows: vec![], rows_affected, elapsed_ms: 0.0 })
+}
+
+/// Format an anyhow error as a human-readable string.
+/// For tokio-postgres `DbError`s the raw string looks like
+/// `db error: ERROR: relation "x" does not exist` — we strip the redundant
+/// prefix and append DETAIL / HINT lines when available.
+fn fmt_pg_error(e: &anyhow::Error) -> String {
+    if let Some(pg) = e.downcast_ref::<tokio_postgres::Error>() {
+        if let Some(db) = pg.as_db_error() {
+            let mut s = db.message().to_owned();
+            if let Some(d) = db.detail() { s.push_str(&format!("\nDetail: {d}")); }
+            if let Some(h) = db.hint()   { s.push_str(&format!("\nHint: {h}")); }
+            return s;
+        }
+    }
+    e.to_string()
 }
 
 fn export_csv(result: &QueryResult, path: &str) -> Result<()> {

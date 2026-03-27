@@ -1,4 +1,7 @@
+pub mod autocomplete;
+pub mod er_diagram;
 pub mod connection_dialog;
+pub mod dashboard;
 pub mod explain;
 pub mod join_builder;
 pub mod query_panel;

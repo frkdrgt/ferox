@@ -21,29 +21,36 @@
 
 ---
 
-> **Ferox** runs in under 30 MB and starts in under 200 ms — because your database client shouldn't be the bottleneck.
+> **Ferox** runs under 50 MB and starts in under 200 ms — because your database client shouldn't be the bottleneck.
 
 ---
 
 ## Features
 
 ### Core
-- **Multi-tab query editor** — Ctrl+T for new tab, Ctrl+W to close, syntax highlighting out of the box
+- **Multi-tab query editor** — Ctrl+T for new tab, Ctrl+W to close, right-click tab for Close / Close Others / Close All
+- **Per-table tabs** — clicking a table opens it in its own tab; existing tabs are reused
 - **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables, with live filter
-- **Data browser** — double-click any table to browse with server-side pagination & ORDER BY
+- **Data browser** — double-click any table or view to browse with server-side pagination & ORDER BY
 - **Inline editing** — double-click a cell to edit, Enter to commit, Escape to cancel
 - **Persistent query history** — last 500 queries, searchable, click to reload
 
 ### Query Tools
-- **Join Builder** — visual multi-table JOIN generator with automatic column discovery; outputs ready-to-run SQL
+- **Multi-statement execution** — paste multiple SQL statements separated by `;`, all run in sequence
+- **View DDL** — right-click any view or materialized view → Show DDL
 - **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node
+- **Safe mode transactions** — DML wrapped in explicit BEGIN/COMMIT/ROLLBACK
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
+- **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
 
 ### Developer Experience
-- **SQL syntax highlighting** — dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes via `syntect`
-- **Connection profiles** — saved to `~/.config/ferox/config.toml`, SSL modes supported
+- **SQL syntax highlighting** — zero-dependency tokenizer, dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes
+- **SQL autocomplete** — table names, column names, keywords
+- **Connection profiles** — saved to `~/.config/ferox/config.toml`, SSL modes + SSH tunnel supported
 - **F5 / Ctrl+Enter** to run, **Ctrl+C** to cancel mid-query
 - **Native OS dialogs** — file pickers feel at home on Windows and macOS
+- **Database dashboard** — table sizes, index stats, active connections at a glance
+- **ER diagram** — visual schema relationship viewer
 
 ---
 
@@ -51,10 +58,9 @@
 
 | Metric | Ferox |
 |--------|-------|
-| RAM at idle | **~25 MB** 
-| RAM with 10k rows | **~55 MB**
+| RAM at idle | **~45 MB**
 | Cold startup | **< 200 ms**
-| Binary size | **< 15 MB**
+| Binary size | **~7 MB**
 
 *Measured on Windows 10, release build with LTO.*
 
@@ -182,7 +188,8 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 | PostgreSQL driver | [`tokio-postgres`](https://github.com/sfackler/rust-postgres) |
 | Async runtime | `tokio` (current-thread in DB thread) |
 | TLS | `native-tls` + `postgres-native-tls` |
-| Syntax highlighting | [`syntect`](https://github.com/trishume/syntect) |
+| SSH tunnel | `russh` |
+| SQL highlighting | custom zero-dependency tokenizer (`src/ui/syntax.rs`) |
 | Config | `serde` + `toml` |
 | File dialogs | [`rfd`](https://github.com/PolyMeilex/rfd) |
 
@@ -190,14 +197,17 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 
 ## Roadmap
 
-- [ ] **Auto-complete** — table names, column names, SQL keywords
-- [ ] **SSH tunnel** — connect through a jump host
-- [ ] **ER diagram** — visual schema relationships
-- [ ] **Query formatter** — one-click SQL beautification
-- [ ] **Multiple simultaneous connections** — separate DB threads per connection
+- [x] **Auto-complete** — table names, column names, SQL keywords
+- [x] **Database dashboard** — table sizes, index bloat, active connections
+- [x] **Multiple simultaneous connections** — separate DB threads per connection
+- [x] **SSH tunnel** — connect through a jump host
+- [x] **ER diagram** — visual schema relationships
+- [x] **Query formatter** — one-click SQL beautification
+- [x] **Multi-statement queries** — run multiple statements separated by `;`
+- [x] **View DDL** — right-click any view or materialized view to see its definition
+- [x] **Safe mode transactions** — explicit BEGIN/COMMIT/ROLLBACK for DML
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch
-- [ ] **Database dashboard** — table sizes, index bloat, active connections
 - [ ] **Result diff** — compare two query results side-by-side
 - [ ] **CSV / JSON import** — drag-and-drop data into a table
 
@@ -223,6 +233,44 @@ See `CLAUDE.md` for architecture notes.
 
 ---
 
+## How This Was Built
+
+This project is an experiment in **vibe-coding** — writing software primarily through conversation with an AI, rather than typing code by hand.
+
+Every line of Rust in this repository was generated by [Claude](https://claude.ai) (Anthropic) via [Claude Code](https://github.com/anthropics/claude-code). Every commit was authored through an AI session. The developer's role was to define what to build, review what came out, and decide what to do next — not to write the code itself.
+
+### Why be upfront about this?
+
+Because it matters. If you're evaluating this project — as a tool, as a reference, or as a hiring signal — you deserve to know how it was made. Passing this off as hand-crafted Rust would be dishonest.
+
+### What the human actually did
+
+- Chose the goal: a lightweight, native PostgreSQL client as an alternative to DBeaver/DataGrip
+- Picked the stack: `egui`, `tokio-postgres`, `russh` — no Electron, no JVM
+- Defined the architecture: two-thread model, `mpsc` channels, no shared mutable state between UI and DB
+- Wrote the `CLAUDE.md` spec that guided every session
+- Planned each feature phase, reviewed diffs, caught bugs, and made judgment calls
+- Did *not* write the actual Rust
+
+### What Claude actually did
+
+- Wrote all source files from scratch (`src/app.rs`, `src/db/`, `src/ui/`, etc.)
+- Made architectural decisions within the constraints given
+- Debugged compile errors iteratively
+- Kept the codebase consistent across sessions using the `CLAUDE.md` context
+
+### Is the code good?
+
+Honestly: mostly yes, sometimes no. The architecture is clean and the UI thread never blocks. There are places where a seasoned Rust developer would've made different tradeoffs — but it compiles, it runs, and it does what it's supposed to do. It started from zero and grew to a multi-feature desktop app across a handful of sessions.
+
+### The point
+
+This isn't about whether AI-generated code is "real" code. It's about what's now possible when you pair a clear technical vision with a capable AI. Ferox exists because it was cheap enough — in time and effort — to just build the thing.
+
+Whether that's exciting or unsettling probably says something about where you are in your relationship with these tools.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
@@ -232,5 +280,6 @@ MIT — see [LICENSE](LICENSE)
 <div align="center">
 
 *Built with Rust because life's too short for slow database clients.*
+*Written by Claude because that's just where we are now.*
 
 </div>

@@ -217,6 +217,208 @@ pub async fn load_foreign_keys(
         .collect())
 }
 
+// ── Dashboard stats ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TableStat {
+    pub schema: String,
+    pub table: String,
+    pub total_size: String,
+    pub table_size: String,
+    pub index_size: String,
+    pub total_bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnInfo {
+    pub pid: String,
+    pub username: String,
+    pub app_name: String,
+    pub state: String,
+    pub query_preview: String,
+    pub duration: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexStat {
+    pub schema: String,
+    pub table: String,
+    pub index_name: String,
+    pub size: String,
+    pub scans: i64,
+}
+
+pub async fn load_table_stats(client: &Client) -> Result<Vec<TableStat>> {
+    use tokio_postgres::SimpleQueryMessage;
+    let sql = "SELECT \
+        schemaname, \
+        tablename, \
+        pg_size_pretty(pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as total_size, \
+        pg_size_pretty(pg_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as table_size, \
+        pg_size_pretty(pg_indexes_size(quote_ident(schemaname)||'.'||quote_ident(tablename))) as index_size, \
+        pg_total_relation_size(quote_ident(schemaname)||'.'||quote_ident(tablename)) as total_bytes \
+        FROM pg_tables \
+        WHERE schemaname NOT IN ('pg_catalog','information_schema') \
+        ORDER BY total_bytes DESC NULLS LAST \
+        LIMIT 30";
+    let msgs = client.simple_query(sql).await?;
+    let mut result = Vec::new();
+    for msg in msgs {
+        if let SimpleQueryMessage::Row(row) = msg {
+            result.push(TableStat {
+                schema: row.get(0).unwrap_or("").to_owned(),
+                table: row.get(1).unwrap_or("").to_owned(),
+                total_size: row.get(2).unwrap_or("").to_owned(),
+                table_size: row.get(3).unwrap_or("").to_owned(),
+                index_size: row.get(4).unwrap_or("").to_owned(),
+                total_bytes: row.get(5).and_then(|s| s.parse().ok()).unwrap_or(0),
+            });
+        }
+    }
+    Ok(result)
+}
+
+pub async fn load_connections(client: &Client) -> Result<Vec<ConnInfo>> {
+    use tokio_postgres::SimpleQueryMessage;
+    let sql = "SELECT \
+        pid::text, \
+        COALESCE(usename,'') as usename, \
+        COALESCE(application_name,'') as app, \
+        COALESCE(state,'') as state, \
+        LEFT(COALESCE(query,''),80) as query_preview, \
+        COALESCE(EXTRACT(EPOCH FROM (now()-query_start))::bigint::text||'s','') as duration \
+        FROM pg_stat_activity \
+        WHERE datname = current_database() \
+        ORDER BY query_start DESC NULLS LAST";
+    let msgs = client.simple_query(sql).await?;
+    let mut result = Vec::new();
+    for msg in msgs {
+        if let SimpleQueryMessage::Row(row) = msg {
+            result.push(ConnInfo {
+                pid: row.get(0).unwrap_or("").to_owned(),
+                username: row.get(1).unwrap_or("").to_owned(),
+                app_name: row.get(2).unwrap_or("").to_owned(),
+                state: row.get(3).unwrap_or("").to_owned(),
+                query_preview: row.get(4).unwrap_or("").to_owned(),
+                duration: row.get(5).unwrap_or("").to_owned(),
+            });
+        }
+    }
+    Ok(result)
+}
+
+pub async fn load_index_stats(client: &Client) -> Result<Vec<IndexStat>> {
+    use tokio_postgres::SimpleQueryMessage;
+    let sql = "SELECT \
+        schemaname, \
+        relname as tablename, \
+        indexrelname as indexname, \
+        pg_size_pretty(pg_relation_size(indexrelid)) as size, \
+        idx_scan \
+        FROM pg_stat_user_indexes \
+        ORDER BY pg_relation_size(indexrelid) DESC NULLS LAST \
+        LIMIT 30";
+    let msgs = client.simple_query(sql).await?;
+    let mut result = Vec::new();
+    for msg in msgs {
+        if let SimpleQueryMessage::Row(row) = msg {
+            result.push(IndexStat {
+                schema: row.get(0).unwrap_or("").to_owned(),
+                table: row.get(1).unwrap_or("").to_owned(),
+                index_name: row.get(2).unwrap_or("").to_owned(),
+                size: row.get(3).unwrap_or("").to_owned(),
+                scans: row.get(4).and_then(|s| s.parse().ok()).unwrap_or(0),
+            });
+        }
+    }
+    Ok(result)
+}
+
+// ── ER Diagram types ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ParsedForeignKey {
+    pub constraint_name: String,
+    pub source_columns: Vec<String>,
+    pub target_schema: String,
+    pub target_table: String,
+    pub target_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ErTableInfo {
+    pub schema: String,
+    pub table: String,
+    pub columns: Vec<ColumnInfo>,
+    pub primary_keys: Vec<String>,
+    pub foreign_keys: Vec<ParsedForeignKey>,
+}
+
+/// Parse a pg_get_constraintdef FK definition like:
+///   "FOREIGN KEY (col) REFERENCES [schema.]table(col)"
+pub fn parse_foreign_key(fk: &ForeignKeyInfo) -> Option<ParsedForeignKey> {
+    let def = &fk.definition;
+    let fk_kw = "FOREIGN KEY (";
+    let fk_start = def.find(fk_kw)?;
+    let after_fk = &def[fk_start + fk_kw.len()..];
+    let src_end = after_fk.find(')')?;
+    let source_columns: Vec<String> = after_fk[..src_end]
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect();
+
+    let ref_kw = "REFERENCES ";
+    let ref_start = def.find(ref_kw)?;
+    let after_ref = &def[ref_start + ref_kw.len()..];
+    let paren_pos = after_ref.find('(')?;
+    let table_part = after_ref[..paren_pos].trim();
+
+    let (target_schema, target_table) = if let Some(dot) = table_part.find('.') {
+        (table_part[..dot].to_owned(), table_part[dot + 1..].to_owned())
+    } else {
+        (String::new(), table_part.to_owned())
+    };
+
+    let after_paren = &after_ref[paren_pos + 1..];
+    let tgt_end = after_paren.find(')')?;
+    let target_columns: Vec<String> = after_paren[..tgt_end]
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .collect();
+
+    Some(ParsedForeignKey {
+        constraint_name: fk.name.clone(),
+        source_columns,
+        target_schema,
+        target_table,
+        target_columns,
+    })
+}
+
+pub async fn load_er_diagram(client: &Client, schema: &str) -> Result<Vec<ErTableInfo>> {
+    let tables = load_tables(client, schema).await?;
+    let mut result = Vec::new();
+
+    for t in &tables {
+        if !matches!(t.kind, TableKind::Table) {
+            continue;
+        }
+        let columns = load_columns(client, schema, &t.name).await.unwrap_or_default();
+        let primary_keys = load_primary_key(client, schema, &t.name).await.unwrap_or_default();
+        let raw_fks = load_foreign_keys(client, schema, &t.name).await.unwrap_or_default();
+        let foreign_keys = raw_fks.iter().filter_map(parse_foreign_key).collect();
+
+        result.push(ErTableInfo {
+            schema: schema.to_owned(),
+            table: t.name.clone(),
+            columns,
+            primary_keys,
+            foreign_keys,
+        });
+    }
+    Ok(result)
+}
+
 pub async fn load_columns(
     client: &Client,
     schema: &str,

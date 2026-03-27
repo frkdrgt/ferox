@@ -5,15 +5,160 @@ use egui::{Color32, RichText, Sense, Vec2};
 
 use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo, TableKind};
 
+/// Script kinds for the Generate Script menu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScriptKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
 /// Actions the sidebar can request from the rest of the app.
 #[derive(Debug)]
 pub enum SidebarAction {
     LoadTables(String),
     LoadDetails { schema: String, table: String },
     BrowseTable { schema: String, table: String },
+    /// Paste SQL into the active editor without executing.
+    SetSql(String),
     RunSql(String),
     NewTable { schema: String },
     EditTable { schema: String, table: String },
+    ViewErDiagram { schema: String },
+    /// Generate a script for schema.table — app.rs resolves columns if needed.
+    GenerateScript { schema: String, table: String, kind: ScriptKind },
+}
+
+// ── Script generation helpers (pub — used by app.rs when details arrive) ─────
+
+pub fn placeholder(data_type: &str) -> &'static str {
+    let t = data_type.to_lowercase();
+    if t.contains("int") || t.contains("serial") || t.contains("numeric")
+        || t.contains("float") || t.contains("double") || t.contains("decimal")
+        || t.contains("real") || t.contains("money")
+    {
+        "0"
+    } else if t.contains("bool") {
+        "false"
+    } else if t.contains("timestamp") || t.contains("date") || t.contains("time") {
+        "NOW()"
+    } else if t.contains("uuid") {
+        "gen_random_uuid()"
+    } else if t.contains("json") {
+        "'{}'::jsonb"
+    } else {
+        "''"
+    }
+}
+
+pub fn pk_from_indexes(indexes: &[IndexInfo]) -> Vec<String> {
+    indexes
+        .iter()
+        .find(|i| i.name.ends_with("_pkey") || i.name.to_lowercase().contains("primary"))
+        .and_then(|i| {
+            let start = i.definition.rfind('(')?;
+            let end = i.definition.rfind(')')?;
+            if end > start {
+                Some(
+                    i.definition[start + 1..end]
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+pub fn script_select(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+    if cols.is_empty() {
+        return format!("SELECT *\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;");
+    }
+    let col_list = cols
+        .iter()
+        .map(|c| format!("    \"{}\"", c.name))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("SELECT\n{col_list}\nFROM \"{schema}\".\"{table}\"\nWHERE 1=1\nLIMIT 100;")
+}
+
+pub fn script_insert(schema: &str, table: &str, cols: &[ColumnInfo]) -> String {
+    let insertable: Vec<&ColumnInfo> = cols
+        .iter()
+        .filter(|c| {
+            !c.column_default
+                .as_deref()
+                .map(|d| d.contains("nextval"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if insertable.is_empty() {
+        return format!("INSERT INTO \"{schema}\".\"{table}\" DEFAULT VALUES;");
+    }
+    let col_list = insertable
+        .iter()
+        .map(|c| format!("    \"{}\"", c.name))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let val_list = insertable
+        .iter()
+        .map(|c| {
+            format!(
+                "    {}  -- {}: {}",
+                placeholder(&c.data_type),
+                c.name,
+                c.data_type
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    format!("INSERT INTO \"{schema}\".\"{table}\" (\n{col_list}\n) VALUES (\n{val_list}\n);")
+}
+
+pub fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+    let pk_set: std::collections::HashSet<&str> = pk.iter().map(|s| s.as_str()).collect();
+    let set_cols: Vec<&ColumnInfo> = cols.iter().filter(|c| !pk_set.contains(c.name.as_str())).collect();
+    let set_clause = if set_cols.is_empty() {
+        "    -- no non-PK columns to update".to_owned()
+    } else {
+        set_cols
+            .iter()
+            .map(|c| format!("    \"{}\" = {}  -- {}", c.name, placeholder(&c.data_type), c.data_type))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    };
+    let where_clause = if pk.is_empty() {
+        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+    } else {
+        pk.iter()
+            .map(|p| {
+                let dt = cols.iter().find(|c| &c.name == p).map(|c| c.data_type.as_str()).unwrap_or("?");
+                format!("    \"{}\" = {}  -- {}", p, placeholder(dt), dt)
+            })
+            .collect::<Vec<_>>()
+            .join("\n    AND ")
+    };
+    format!("UPDATE \"{schema}\".\"{table}\"\nSET\n{set_clause}\nWHERE\n{where_clause};")
+}
+
+pub fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
+    let where_clause = if pk.is_empty() {
+        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+    } else {
+        pk.iter()
+            .map(|p| {
+                let dt = cols.iter().find(|c| &c.name == p).map(|c| c.data_type.as_str()).unwrap_or("?");
+                format!("    \"{}\" = {}  -- {}", p, placeholder(dt), dt)
+            })
+            .collect::<Vec<_>>()
+            .join("\n    AND ")
+    };
+    format!(
+        "-- ⚠️ Review WHERE clause carefully before running\nDELETE FROM \"{schema}\".\"{table}\"\nWHERE\n{where_clause};"
+    )
 }
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -87,6 +232,27 @@ impl Sidebar {
 
     pub fn schema_names(&self) -> Vec<String> {
         self.schemas.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Returns (table_names, column_names) for autocomplete.
+    pub fn completion_data(&self) -> (Vec<String>, Vec<String>) {
+        let mut tables = Vec::new();
+        let mut columns = Vec::new();
+        for schema_tables in self.tables.values() {
+            for t in schema_tables {
+                tables.push(t.name.clone());
+                let key = (t.schema.clone(), t.name.clone());
+                if let Some(details) = self.table_details.get(&key) {
+                    for col in &details.columns {
+                        if !columns.contains(&col.name) {
+                            columns.push(col.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        tables.dedup();
+        (tables, columns)
     }
 
     /// Returns all known tables with their loaded column names,
@@ -224,7 +390,7 @@ impl Sidebar {
                         if ui.is_rect_visible(rect) {
                             let painter = ui.painter();
                             let bg = if resp.hovered() {
-                                Color32::from_rgb(32, 44, 68)
+                                Color32::from_rgb(65, 69, 73)
                             } else {
                                 Color32::TRANSPARENT
                             };
@@ -276,6 +442,12 @@ impl Sidebar {
                         ui.separator();
                         if ui.button("＋  New Table…").clicked() {
                             actions.push(SidebarAction::NewTable {
+                                schema: schema_name_for_menu.clone(),
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("📐  View ER Diagram").clicked() {
+                            actions.push(SidebarAction::ViewErDiagram {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();
@@ -382,6 +554,7 @@ impl Sidebar {
                                         );
                                     });
                                 });
+                                let details_for_menu = details.clone();
                                 resp.context_menu(|ui| {
                                     ui.label(
                                         RichText::new(format!("{schema_name}.{table_name}"))
@@ -389,6 +562,27 @@ impl Sidebar {
                                             .small(),
                                     );
                                     ui.separator();
+
+                                    // ── Script generation ─────────────────
+                                    ui.menu_button("📄  Generate Script", |ui| {
+                                        for (label, kind) in [
+                                            ("SELECT", ScriptKind::Select),
+                                            ("INSERT", ScriptKind::Insert),
+                                            ("UPDATE", ScriptKind::Update),
+                                            ("DELETE", ScriptKind::Delete),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                actions.push(SidebarAction::GenerateScript {
+                                                    schema: schema_name.clone(),
+                                                    table: table_name.clone(),
+                                                    kind,
+                                                });
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                    ui.separator();
+
                                     if ui.button("▶  Browse rows").clicked() {
                                         actions.push(SidebarAction::BrowseTable {
                                             schema: schema_name.clone(),
@@ -402,6 +596,26 @@ impl Sidebar {
                                                 schema: schema_name.clone(),
                                                 table: table_name.clone(),
                                             });
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    if matches!(table.kind, TableKind::View | TableKind::MaterializedView) {
+                                        if ui.button("{}  Show DDL").clicked() {
+                                            let sql = match table.kind {
+                                                TableKind::MaterializedView => format!(
+                                                    "SELECT 'CREATE MATERIALIZED VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
+                                                     || definition AS ddl \
+                                                     FROM pg_matviews \
+                                                     WHERE schemaname = '{schema_name}' \
+                                                       AND matviewname = '{table_name}';"
+                                                ),
+                                                _ => format!(
+                                                    "SELECT 'CREATE OR REPLACE VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
+                                                     || pg_get_viewdef('\"{}\".\"{table_name}\"'::regclass, true) AS ddl;",
+                                                    schema_name
+                                                ),
+                                            };
+                                            actions.push(SidebarAction::RunSql(sql));
                                             ui.close_menu();
                                         }
                                     }
@@ -480,27 +694,40 @@ impl Sidebar {
 fn render_kind_header(ui: &mut egui::Ui, label: &str, count: usize) {
     ui.add_space(4.0);
     let available_w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(available_w, 14.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(available_w, 18.0), Sense::hover());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let text = format!("{label} ({count})");
-        // Draw text
+
+        // Label text
         painter.text(
-            rect.left_center() + Vec2::new(2.0, 0.0),
+            rect.left_center() + Vec2::new(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            &text,
+            label.to_uppercase(),
             egui::FontId::proportional(9.5),
-            COLOR_KIND_HEADER,
+            Color32::from_rgb(110, 123, 139), // TEXT_DIM
         );
-        // Draw line to the right
-        let line_x = 2.0 + (text.len() as f32 * 5.8).min(available_w - 10.0);
-        painter.line_segment(
-            [
-                rect.left_center() + Vec2::new(line_x + 4.0, 0.0),
-                rect.right_center() + Vec2::new(-4.0, 0.0),
-            ],
-            egui::Stroke::new(0.5, Color32::from_gray(45)),
+
+        // Count badge — pill background
+        let badge_str = format!("{count}");
+        let badge_font = egui::FontId::proportional(9.5);
+        let badge_galley = painter.layout_no_wrap(
+            badge_str.clone(),
+            badge_font.clone(),
+            Color32::from_rgb(110, 123, 139),
+        );
+        let badge_w = badge_galley.rect.width() + 8.0;
+        let badge_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - badge_w / 2.0 - 4.0, rect.center().y),
+            egui::vec2(badge_w, 13.0),
+        );
+        painter.rect_filled(badge_rect, egui::Rounding::same(6.0), Color32::from_rgb(76, 80, 82));
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &badge_str,
+            badge_font,
+            Color32::from_rgb(169, 183, 198),
         );
     }
 }
@@ -522,7 +749,7 @@ fn render_table_row_ui(
         let bg = if is_selected {
             Color32::from_rgba_premultiplied(86, 156, 214, 35)
         } else if resp.hovered() {
-            Color32::from_rgb(32, 44, 68)
+            Color32::from_rgb(65, 69, 73)
         } else {
             Color32::TRANSPARENT
         };
@@ -531,9 +758,9 @@ fn render_table_row_ui(
         if is_selected {
             let bar = egui::Rect::from_min_size(
                 rect.left_top(),
-                Vec2::new(2.0, rect.height()),
+                Vec2::new(3.0, rect.height()),
             );
-            painter.rect_filled(bar, 0.0, COLOR_TABLE);
+            painter.rect_filled(bar, 0.0, Color32::from_rgb(78, 159, 222)); // #4e9fde
         }
 
         // Expand arrow

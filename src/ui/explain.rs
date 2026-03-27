@@ -56,6 +56,14 @@ impl ExplainResult {
             max_time,
         })
     }
+
+    /// Walk the plan tree and collect human-readable optimization suggestions.
+    pub fn collect_suggestions(&self) -> Vec<String> {
+        let mut suggestions: Vec<String> = Vec::new();
+        collect_node_suggestions(&self.root, &mut suggestions, self.max_time);
+        suggestions.dedup();
+        suggestions
+    }
 }
 
 impl PlanNode {
@@ -70,6 +78,85 @@ impl PlanNode {
             self.actual_total_time.unwrap_or(0.0),
             |m, c| m.max(c.max_actual_time()),
         )
+    }
+
+    /// True when this node has the highest actual_total_time in the plan.
+    fn is_slowest(&self, max_time: f64) -> bool {
+        max_time > 0.0
+            && self
+                .actual_total_time
+                .map(|t| (t - max_time).abs() < 0.001)
+                .unwrap_or(false)
+    }
+
+    /// Row estimation error ratio: actual / plan.  None if data unavailable.
+    fn estimation_ratio(&self) -> Option<f64> {
+        if self.plan_rows <= 0 {
+            return None;
+        }
+        let actual = self.actual_rows? * self.actual_loops.unwrap_or(1);
+        Some(actual as f64 / self.plan_rows as f64)
+    }
+}
+
+fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f64) {
+    // 1. Seq Scan — possible missing index
+    if node.node_type == "Seq Scan" {
+        let name = node.relation.as_deref().unwrap_or("?");
+        out.push(format!(
+            "\"{}\" tablosunda tam tablo taraması (Seq Scan) — filtreleniyorsa index eklemeyi düşünün",
+            name
+        ));
+    }
+
+    // 2. Bad row estimation — planner stats may be stale
+    if let Some(ratio) = node.estimation_ratio() {
+        if ratio > 10.0 || ratio < 0.1 {
+            let name = node
+                .relation
+                .as_deref()
+                .unwrap_or(node.node_type.as_str());
+            let plan = node.plan_rows;
+            let actual = node.actual_rows.unwrap_or(0) * node.actual_loops.unwrap_or(1);
+            out.push(format!(
+                "\"{}\" için satır tahmini hatalı (plan: {plan}, gerçek: {actual}, oran: {ratio:.1}×) — \
+                 ANALYZE çalıştırın veya istatistikleri güncelleyin",
+                name
+            ));
+        }
+    }
+
+    // 3. Expensive Sort — sorting without an index
+    if (node.node_type == "Sort" || node.node_type == "Incremental Sort")
+        && max_time > 0.0
+        && node.actual_total_time.map(|t| t / max_time > 0.25).unwrap_or(false)
+    {
+        let key = node
+            .extra
+            .iter()
+            .find(|(k, _)| k == "Sort Key")
+            .map(|(_, v)| format!(" ({v})"))
+            .unwrap_or_default();
+        out.push(format!(
+            "Pahalı Sort işlemi{key} — sıralama sütununa index eklemeyi düşünün"
+        ));
+    }
+
+    // 4. Nested Loop with many rows — can be O(n²)
+    if node.node_type == "Nested Loop" {
+        if let Some(actual) = node.actual_rows {
+            let loops = node.actual_loops.unwrap_or(1);
+            if actual * loops > 10_000 {
+                out.push(
+                    "Nested Loop büyük veri setinde çalışıyor — Hash Join daha verimli olabilir"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    for child in &node.children {
+        collect_node_suggestions(child, out, max_time);
     }
 }
 
@@ -145,7 +232,7 @@ fn parse_node(v: &Value) -> Option<PlanNode> {
 
 /// Top-level render entry point. Call this inside a panel/frame.
 pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
-    // Summary bar
+    // ── Summary bar ──────────────────────────────────────────────────────────
     egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
         .inner_margin(egui::Margin::symmetric(8.0, 4.0))
@@ -158,22 +245,51 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
                     ui.separator();
                 }
                 if let Some(e) = result.execution_ms {
-                    ui.colored_label(
-                        if e > 1000.0 {
-                            Color32::RED
-                        } else if e > 100.0 {
-                            Color32::YELLOW
-                        } else {
-                            Color32::GREEN
-                        },
-                        format!("Execution: {e:.2} ms"),
-                    );
+                    let color = if e > 1000.0 {
+                        Color32::from_rgb(220, 80, 80)
+                    } else if e > 100.0 {
+                        Color32::from_rgb(220, 180, 60)
+                    } else {
+                        Color32::from_rgb(80, 200, 120)
+                    };
+                    ui.colored_label(color, format!("Execution: {e:.2} ms"));
                 }
             });
         });
 
     ui.add_space(4.0);
 
+    // ── Suggestions panel ────────────────────────────────────────────────────
+    let suggestions = result.collect_suggestions();
+    if !suggestions.is_empty() {
+        egui::Frame::none()
+            .fill(Color32::from_rgba_premultiplied(60, 40, 10, 220))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(180, 130, 40)))
+            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+            .rounding(4.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("⚡ Öneriler")
+                            .strong()
+                            .color(Color32::from_rgb(220, 180, 60)),
+                    );
+                });
+                ui.add_space(2.0);
+                for s in &suggestions {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("•")
+                                .color(Color32::from_rgb(220, 180, 60)),
+                        );
+                        ui.label(RichText::new(s).small().color(Color32::from_rgb(220, 200, 140)));
+                    });
+                }
+            });
+        ui.add_space(6.0);
+    }
+
+    // ── Plan tree ────────────────────────────────────────────────────────────
     egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -192,8 +308,15 @@ fn render_node(
     let my_id = *id;
     *id += 1;
 
+    let is_slowest = node.is_slowest(result.max_time);
+    let is_seq_scan = node.node_type == "Seq Scan";
+
     let header_text = node_header_text(node);
-    let color = node_color(&node.node_type);
+    let color = if is_slowest && result.max_time > 0.0 {
+        Color32::from_rgb(230, 80, 80) // red for slowest
+    } else {
+        node_color(&node.node_type)
+    };
 
     let default_open = depth < 3;
 
@@ -202,6 +325,39 @@ fn render_node(
         .default_open(default_open)
         .id_source(id_source)
         .show(ui, |ui| {
+            // ── Badges row ───────────────────────────────────────────────
+            ui.horizontal_wrapped(|ui| {
+                // "Slowest" badge
+                if is_slowest && result.max_time > 0.0 {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_premultiplied(180, 40, 40, 200))
+                        .rounding(3.0)
+                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("🐢 En Yavaş Node")
+                                    .small()
+                                    .color(Color32::WHITE),
+                            );
+                        });
+                }
+
+                // Seq Scan warning badge
+                if is_seq_scan {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_premultiplied(180, 100, 20, 200))
+                        .rounding(3.0)
+                        .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("⚠ Full Scan")
+                                    .small()
+                                    .color(Color32::WHITE),
+                            );
+                        });
+                }
+            });
+
             // ── Stats row ────────────────────────────────────────────────
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -240,23 +396,47 @@ fn render_node(
                             .small()
                             .monospace(),
                     );
-                    // Estimate accuracy
-                    if node.plan_rows > 0 {
-                        let actual_total = r * loops;
-                        let ratio = actual_total as f64 / node.plan_rows as f64;
-                        let accuracy_color = if ratio > 10.0 || ratio < 0.1 {
-                            Color32::RED
+
+                    // Estimation error badge
+                    if let Some(ratio) = node.estimation_ratio() {
+                        let (badge_color, label) = if ratio > 10.0 || ratio < 0.1 {
+                            // Severe mismatch — red badge
+                            (
+                                Color32::from_rgba_premultiplied(200, 50, 50, 220),
+                                format!("est ×{:.1} ⚠", ratio),
+                            )
                         } else if ratio > 3.0 || ratio < 0.33 {
-                            Color32::YELLOW
+                            // Moderate mismatch — yellow badge
+                            (
+                                Color32::from_rgba_premultiplied(180, 140, 20, 220),
+                                format!("est ×{:.1}", ratio),
+                            )
                         } else {
-                            Color32::GRAY
+                            // OK — plain dim text
+                            (Color32::TRANSPARENT, format!("est ×{:.1}", ratio))
                         };
-                        ui.colored_label(
-                            accuracy_color,
-                            RichText::new(format!("(est ×{:.1})", ratio))
-                                .small()
-                                .monospace(),
-                        );
+
+                        if badge_color != Color32::TRANSPARENT {
+                            egui::Frame::none()
+                                .fill(badge_color)
+                                .rounding(3.0)
+                                .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(&label)
+                                            .small()
+                                            .monospace()
+                                            .color(Color32::WHITE),
+                                    );
+                                });
+                        } else {
+                            ui.label(
+                                RichText::new(&label)
+                                    .small()
+                                    .monospace()
+                                    .color(Color32::GRAY),
+                            );
+                        }
                     }
                 }
             });
@@ -377,9 +557,9 @@ fn time_color(time_ms: f64, max_time: f64) -> Color32 {
     }
     let ratio = time_ms / max_time;
     if ratio > 0.7 {
-        Color32::RED
+        Color32::from_rgb(230, 80, 80)
     } else if ratio > 0.3 {
-        Color32::YELLOW
+        Color32::from_rgb(220, 180, 60)
     } else {
         Color32::from_rgb(100, 200, 100)
     }
