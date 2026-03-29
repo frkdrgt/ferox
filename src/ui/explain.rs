@@ -1,6 +1,8 @@
 use egui::{Color32, RichText, Stroke};
 use serde_json::Value;
 
+use crate::i18n::I18n;
+
 // ── Data model ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -58,9 +60,9 @@ impl ExplainResult {
     }
 
     /// Walk the plan tree and collect human-readable optimization suggestions.
-    pub fn collect_suggestions(&self) -> Vec<String> {
+    pub fn collect_suggestions(&self, i18n: &I18n) -> Vec<String> {
         let mut suggestions: Vec<String> = Vec::new();
-        collect_node_suggestions(&self.root, &mut suggestions, self.max_time);
+        collect_node_suggestions(&self.root, &mut suggestions, self.max_time, i18n);
         suggestions.dedup();
         suggestions
     }
@@ -99,14 +101,11 @@ impl PlanNode {
     }
 }
 
-fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f64) {
+fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f64, i18n: &I18n) {
     // 1. Seq Scan — possible missing index
     if node.node_type == "Seq Scan" {
         let name = node.relation.as_deref().unwrap_or("?");
-        out.push(format!(
-            "\"{}\" tablosunda tam tablo taraması (Seq Scan) — filtreleniyorsa index eklemeyi düşünün",
-            name
-        ));
+        out.push(i18n.suggest_seq_scan(name));
     }
 
     // 2. Bad row estimation — planner stats may be stale
@@ -118,11 +117,7 @@ fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f6
                 .unwrap_or(node.node_type.as_str());
             let plan = node.plan_rows;
             let actual = node.actual_rows.unwrap_or(0) * node.actual_loops.unwrap_or(1);
-            out.push(format!(
-                "\"{}\" için satır tahmini hatalı (plan: {plan}, gerçek: {actual}, oran: {ratio:.1}×) — \
-                 ANALYZE çalıştırın veya istatistikleri güncelleyin",
-                name
-            ));
+            out.push(i18n.suggest_bad_estimate(name, plan, actual, ratio));
         }
     }
 
@@ -137,9 +132,7 @@ fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f6
             .find(|(k, _)| k == "Sort Key")
             .map(|(_, v)| format!(" ({v})"))
             .unwrap_or_default();
-        out.push(format!(
-            "Pahalı Sort işlemi{key} — sıralama sütununa index eklemeyi düşünün"
-        ));
+        out.push(i18n.suggest_expensive_sort(&key));
     }
 
     // 4. Nested Loop with many rows — can be O(n²)
@@ -147,16 +140,13 @@ fn collect_node_suggestions(node: &PlanNode, out: &mut Vec<String>, max_time: f6
         if let Some(actual) = node.actual_rows {
             let loops = node.actual_loops.unwrap_or(1);
             if actual * loops > 10_000 {
-                out.push(
-                    "Nested Loop büyük veri setinde çalışıyor — Hash Join daha verimli olabilir"
-                        .into(),
-                );
+                out.push(i18n.suggest_nested_loop().to_owned());
             }
         }
     }
 
     for child in &node.children {
-        collect_node_suggestions(child, out, max_time);
+        collect_node_suggestions(child, out, max_time, i18n);
     }
 }
 
@@ -231,7 +221,7 @@ fn parse_node(v: &Value) -> Option<PlanNode> {
 // ── Renderer ─────────────────────────────────────────────────────────────────
 
 /// Top-level render entry point. Call this inside a panel/frame.
-pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
+pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult, i18n: &I18n) {
     // ── Summary bar ──────────────────────────────────────────────────────────
     egui::Frame::none()
         .fill(ui.visuals().faint_bg_color)
@@ -241,7 +231,7 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
                 ui.label(RichText::new("EXPLAIN ANALYZE").strong().monospace());
                 ui.separator();
                 if let Some(p) = result.planning_ms {
-                    ui.label(format!("Planning: {p:.2} ms"));
+                    ui.label(format!("{} {p:.2} ms", i18n.lbl_planning()));
                     ui.separator();
                 }
                 if let Some(e) = result.execution_ms {
@@ -252,7 +242,7 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
                     } else {
                         Color32::from_rgb(80, 200, 120)
                     };
-                    ui.colored_label(color, format!("Execution: {e:.2} ms"));
+                    ui.colored_label(color, format!("{} {e:.2} ms", i18n.lbl_execution()));
                 }
             });
         });
@@ -260,7 +250,7 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
     ui.add_space(4.0);
 
     // ── Suggestions panel ────────────────────────────────────────────────────
-    let suggestions = result.collect_suggestions();
+    let suggestions = result.collect_suggestions(i18n);
     if !suggestions.is_empty() {
         egui::Frame::none()
             .fill(Color32::from_rgba_premultiplied(60, 40, 10, 220))
@@ -270,7 +260,7 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("⚡ Öneriler")
+                        RichText::new(i18n.lbl_suggestions())
                             .strong()
                             .color(Color32::from_rgb(220, 180, 60)),
                     );
@@ -294,7 +284,7 @@ pub fn render_explain(ui: &mut egui::Ui, result: &ExplainResult) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let mut id_counter = 0usize;
-            render_node(ui, &result.root, result, 0, &mut id_counter);
+            render_node(ui, &result.root, result, 0, &mut id_counter, i18n);
         });
 }
 
@@ -304,6 +294,7 @@ fn render_node(
     result: &ExplainResult,
     depth: usize,
     id: &mut usize,
+    i18n: &I18n,
 ) {
     let my_id = *id;
     *id += 1;
@@ -335,7 +326,7 @@ fn render_node(
                         .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                         .show(ui, |ui| {
                             ui.label(
-                                RichText::new("🐢 En Yavaş Node")
+                                RichText::new(i18n.lbl_slowest_node())
                                     .small()
                                     .color(Color32::WHITE),
                             );
@@ -464,7 +455,7 @@ fn render_node(
 
             // ── Children ─────────────────────────────────────────────────
             for child in &node.children {
-                render_node(ui, child, result, depth + 1, id);
+                render_node(ui, child, result, depth + 1, id, i18n);
             }
         });
 }

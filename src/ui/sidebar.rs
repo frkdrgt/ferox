@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use egui::{Color32, RichText, Sense, Vec2};
 
 use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo, TableKind};
+use crate::i18n::I18n;
 
 /// Script kinds for the Generate Script menu.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -293,7 +294,7 @@ impl Sidebar {
         );
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<SidebarAction> {
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> Vec<SidebarAction> {
         let mut actions: Vec<SidebarAction> = Vec::new();
 
         // ── F5: force-refresh all expanded schemas ─────────────────────────────
@@ -331,7 +332,7 @@ impl Sidebar {
             .inner_margin(egui::Margin { left: 8.0, right: 8.0, top: 8.0, bottom: 4.0 })
             .show(ui, |ui| {
                 ui.label(
-                    RichText::new("SCHEMA BROWSER")
+                    RichText::new(i18n.schema_browser())
                         .small()
                         .strong()
                         .color(Color32::from_gray(120)),
@@ -340,7 +341,7 @@ impl Sidebar {
 
                 let filter_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
-                        .hint_text("🔍  Filter…")
+                        .hint_text(i18n.sidebar_filter_hint())
                         .desired_width(f32::INFINITY)
                         .font(egui::TextStyle::Small),
                 );
@@ -440,19 +441,19 @@ impl Sidebar {
                             RichText::new(&schema_name_for_menu).strong().small(),
                         );
                         ui.separator();
-                        if ui.button("＋  New Table…").clicked() {
+                        if ui.button(i18n.schema_menu_new_table()).clicked() {
                             actions.push(SidebarAction::NewTable {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();
                         }
-                        if ui.button("📐  View ER Diagram").clicked() {
+                        if ui.button(i18n.schema_menu_er()).clicked() {
                             actions.push(SidebarAction::ViewErDiagram {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();
                         }
-                        if ui.button("↺  Refresh").clicked() {
+                        if ui.button(i18n.schema_menu_refresh()).clicked() {
                             actions.push(SidebarAction::LoadTables(
                                 schema_name_for_menu.clone(),
                             ));
@@ -469,10 +470,10 @@ impl Sidebar {
                         ui.spacing_mut().item_spacing.y = 0.0;
 
                         let kinds = [
-                            (TableKind::Table, "TABLES"),
-                            (TableKind::View, "VIEWS"),
-                            (TableKind::MaterializedView, "MAT VIEWS"),
-                            (TableKind::ForeignTable, "FOREIGN TABLES"),
+                            (TableKind::Table, i18n.kind_tables()),
+                            (TableKind::View, i18n.kind_views()),
+                            (TableKind::MaterializedView, i18n.kind_mat_views()),
+                            (TableKind::ForeignTable, i18n.kind_foreign_tables()),
                         ];
 
                         for (kind, kind_label) in &kinds {
@@ -564,7 +565,7 @@ impl Sidebar {
                                     ui.separator();
 
                                     // ── Script generation ─────────────────
-                                    ui.menu_button("📄  Generate Script", |ui| {
+                                    ui.menu_button(i18n.table_menu_generate_script(), |ui| {
                                         for (label, kind) in [
                                             ("SELECT", ScriptKind::Select),
                                             ("INSERT", ScriptKind::Insert),
@@ -583,7 +584,7 @@ impl Sidebar {
                                     });
                                     ui.separator();
 
-                                    if ui.button("▶  Browse rows").clicked() {
+                                    if ui.button(i18n.table_menu_browse()).clicked() {
                                         actions.push(SidebarAction::BrowseTable {
                                             schema: schema_name.clone(),
                                             table: table_name.clone(),
@@ -591,7 +592,7 @@ impl Sidebar {
                                         ui.close_menu();
                                     }
                                     if matches!(table.kind, TableKind::Table) {
-                                        if ui.button("✎  Edit Table…").clicked() {
+                                        if ui.button(i18n.table_menu_edit()).clicked() {
                                             actions.push(SidebarAction::EditTable {
                                                 schema: schema_name.clone(),
                                                 table: table_name.clone(),
@@ -600,7 +601,7 @@ impl Sidebar {
                                         }
                                     }
                                     if matches!(table.kind, TableKind::View | TableKind::MaterializedView) {
-                                        if ui.button("{}  Show DDL").clicked() {
+                                        if ui.button(i18n.table_menu_show_ddl()).clicked() {
                                             let sql = match table.kind {
                                                 TableKind::MaterializedView => format!(
                                                     "SELECT 'CREATE MATERIALIZED VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
@@ -619,14 +620,14 @@ impl Sidebar {
                                             ui.close_menu();
                                         }
                                     }
-                                    if ui.button("∑  Count rows").clicked() {
+                                    if ui.button(i18n.table_menu_count()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT COUNT(*) AS total FROM \"{schema_name}\".\"{table_name}\";"
                                         )));
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("≡  Show columns").clicked() {
+                                    if ui.button(i18n.table_menu_show_cols()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT column_name, data_type, is_nullable, column_default \
                                              FROM information_schema.columns \
@@ -636,7 +637,7 @@ impl Sidebar {
                                         )));
                                         ui.close_menu();
                                     }
-                                    if ui.button("⊟  Show indexes").clicked() {
+                                    if ui.button(i18n.table_menu_show_indexes()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT indexname, indexdef \
                                              FROM pg_indexes \
@@ -645,7 +646,7 @@ impl Sidebar {
                                         )));
                                         ui.close_menu();
                                     }
-                                    if ui.button("⊠  Show foreign keys").clicked() {
+                                    if ui.button(i18n.table_menu_show_fks()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT c.conname, pg_get_constraintdef(c.oid) \
                                              FROM pg_constraint c \
@@ -677,7 +678,7 @@ impl Sidebar {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            RichText::new("Not connected")
+                            RichText::new(i18n.lbl_not_connected_sidebar())
                                 .color(Color32::from_gray(90))
                                 .italics(),
                         );

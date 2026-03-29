@@ -3,6 +3,7 @@ use std::sync::mpsc::Sender;
 
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::i18n::{I18n, Lang};
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
 use crate::ui::result_table::ResultTable;
@@ -154,6 +155,8 @@ pub struct QueryPanel {
     autocomplete: Autocomplete,
     completion_tables: Vec<String>,
     completion_columns: Vec<String>,
+    /// Current UI language — used for log messages generated outside show().
+    pub lang: Lang,
 }
 
 impl Default for QueryPanel {
@@ -181,6 +184,7 @@ impl Default for QueryPanel {
             autocomplete: Autocomplete::default(),
             completion_tables: Vec::new(),
             completion_columns: Vec::new(),
+            lang: Lang::En,
         }
     }
 }
@@ -249,10 +253,8 @@ impl QueryPanel {
         if self.browse.is_some() && result.rows_affected.is_some() {
             let n = result.rows_affected.unwrap();
             let ms = result.elapsed_ms;
-            self.push_log(LogEntry::info(format!(
-                "OK — {n} row{} affected  ({ms:.1} ms)",
-                if n == 1 { "" } else { "s" }
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::info(i18n.log_ok_rows(n as i64, ms)));
             self.pending_refresh = true;
             return;
         }
@@ -260,10 +262,8 @@ impl QueryPanel {
         // DML outside browse mode.
         if let Some(n) = result.rows_affected {
             let ms = result.elapsed_ms;
-            self.push_log(LogEntry::info(format!(
-                "OK — {n} row{} affected  ({ms:.1} ms)",
-                if n == 1 { "" } else { "s" }
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::info(i18n.log_ok_rows(n as i64, ms)));
             self.active_tab = PanelTab::Messages;
         }
 
@@ -285,7 +285,8 @@ impl QueryPanel {
     }
 
     pub fn set_export_done(&mut self, path: String) {
-        self.push_log(LogEntry::info(format!("Exported → {path}")));
+        let i18n = I18n::new(self.lang);
+        self.push_log(LogEntry::info(i18n.log_exported(&path)));
     }
 
     pub fn is_running(&self) -> bool {
@@ -338,6 +339,34 @@ impl QueryPanel {
         }
     }
 
+    /// Open a SQL file via native dialog and execute it directly (no editor load).
+    pub fn run_sql_file(&mut self, db_tx: &Sender<DbCommand>) {
+        let Some(path) = pick_open_sql_file() else { return };
+        let i18n = I18n::new(self.lang);
+        match std::fs::read_to_string(&path) {
+            Ok(sql) => {
+                if sql.trim().is_empty() {
+                    self.push_log(LogEntry::warning(i18n.log_file_empty(&path)));
+                    self.active_tab = PanelTab::Messages;
+                    return;
+                }
+                let filename = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                self.push_log(LogEntry::info(i18n.log_running_file(&filename)));
+                self.browse = None;
+                self.browse_result = false;
+                self.set_running();
+                let _ = db_tx.send(DbCommand::Execute(sql));
+            }
+            Err(e) => {
+                self.push_log(LogEntry::error(i18n.log_file_error(&e)));
+                self.active_tab = PanelTab::Messages;
+            }
+        }
+    }
+
     /// SQL to use for export: if in browse mode, export the current page query.
     fn export_sql(&self) -> String {
         if let Some(state) = &self.browse {
@@ -352,6 +381,7 @@ impl QueryPanel {
         ui: &mut egui::Ui,
         db_tx: &Sender<DbCommand>,
         history: &mut QueryHistory,
+        i18n: &I18n,
     ) {
         // Auto-refresh after a DML (UPDATE/INSERT/DELETE) in browse mode.
         if self.pending_refresh {
@@ -377,7 +407,7 @@ impl QueryPanel {
                     let col_dim   = egui::Color32::from_rgb(76, 80, 82);    // #4c5052
 
                     // ── Group 1: Execute ──────────────────────────────────────
-                    let run_label = if self.running { "⏳ Running…" } else { "▶ Run" };
+                    let run_label = if self.running { i18n.btn_running() } else { i18n.btn_run() };
                     let run_fill  = if self.running { col_dim } else { col_green };
                     if ui
                         .add_enabled(!self.running, egui::Button::new(run_label).fill(run_fill))
@@ -394,7 +424,7 @@ impl QueryPanel {
 
                     let cancel_fill = if self.running { col_red } else { col_dim };
                     if ui
-                        .add_enabled(self.running, egui::Button::new("■ Cancel").fill(cancel_fill))
+                        .add_enabled(self.running, egui::Button::new(i18n.btn_cancel_query()).fill(cancel_fill))
                         .clicked()
                     {
                         let _ = db_tx.send(DbCommand::CancelQuery);
@@ -403,9 +433,9 @@ impl QueryPanel {
                     if ui
                         .add_enabled(
                             !self.running && !self.sql.trim().is_empty(),
-                            egui::Button::new("⚡ Explain"),
+                            egui::Button::new(i18n.btn_explain()),
                         )
-                        .on_hover_text("Run EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)")
+                        .on_hover_text(i18n.hover_explain())
                         .clicked()
                     {
                         self.browse = None;
@@ -423,13 +453,13 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 2: History ──────────────────────────────────────
-                    if ui.button("⬆ Hist").on_hover_text("Previous query (↑)").clicked() {
+                    if ui.button(i18n.btn_hist_prev()).on_hover_text(i18n.hover_hist_prev()).clicked() {
                         if let Some(entry) = history.prev() {
                             self.sql = entry.to_owned();
                             self.browse = None;
                         }
                     }
-                    if ui.button("⬇").on_hover_text("Next query (↓)").clicked() {
+                    if ui.button("⬇").on_hover_text(i18n.hover_hist_next()).clicked() {
                         match history.next() {
                             Some(entry) => {
                                 self.sql = entry.to_owned();
@@ -442,8 +472,8 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 3: Format ───────────────────────────────────────
-                    if ui.button("⇄ Format")
-                        .on_hover_text("Format SQL (Shift+Alt+F)")
+                    if ui.button(i18n.btn_format())
+                        .on_hover_text(i18n.hover_format())
                         .clicked()
                         || ui.input(|i| {
                             i.modifiers.shift
@@ -465,11 +495,22 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 4: Export ───────────────────────────────────────
-                    if ui.button("CSV").on_hover_text("Export as CSV…").clicked() {
+                    if ui.button("CSV").on_hover_text(i18n.hover_export_csv()).clicked() {
                         self.trigger_export_csv(db_tx);
                     }
-                    if ui.button("JSON").on_hover_text("Export as JSON…").clicked() {
+                    if ui.button("JSON").on_hover_text(i18n.hover_export_json()).clicked() {
                         self.trigger_export_json(db_tx);
+                    }
+
+                    ui.separator();
+
+                    // ── Group 5: Run File ─────────────────────────────────────
+                    if ui
+                        .add_enabled(!self.running, egui::Button::new(i18n.btn_run_file()))
+                        .on_hover_text(i18n.hover_run_file())
+                        .clicked()
+                    {
+                        self.run_sql_file(db_tx);
                     }
 
                 });
@@ -509,7 +550,7 @@ impl QueryPanel {
                     .layouter(&mut layouter)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Enter SQL… (Ctrl+Enter to run, Enter to accept autocomplete)");
+                    .hint_text(i18n.hint_sql_editor());
                 // Wrap in a ScrollArea so the layout height is strictly capped at
                 // editor_height. Without this, TextEdit grows its layout allocation
                 // as content grows, pushing the result tab bar off-screen.
@@ -629,14 +670,15 @@ impl QueryPanel {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("Browse: {}", state.label()))
+                            egui::RichText::new(format!("{} {}", i18n.browse_prefix(), state.label()))
                                 .strong()
                                 .color(egui::Color32::from_rgb(100, 180, 255)),
                         );
                         if let Some(col) = &state.sort_col {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "  sorted by {} {}",
+                                    "  {} {} {}",
+                                    i18n.browse_sorted_by(),
                                     col,
                                     if state.sort_asc { "▲" } else { "▼" }
                                 ))
@@ -644,7 +686,7 @@ impl QueryPanel {
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕ Exit browse").clicked() {
+                            if ui.small_button(i18n.btn_exit_browse()).clicked() {
                                 self.browse = None;
                                 self.browse_result = false;
                             }
@@ -664,9 +706,11 @@ impl QueryPanel {
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let results_label = i18n.tab_results();
+                    let history_label = i18n.tab_history();
                     let tabs: &[(PanelTab, &str, Option<egui::Color32>)] = &[
-                        (PanelTab::Results, "Results", None),
-                        (PanelTab::History, "History", None),
+                        (PanelTab::Results, results_label, None),
+                        (PanelTab::History, history_label, None),
                     ];
 
                     for (tab, label, _color) in tabs {
@@ -692,7 +736,7 @@ impl QueryPanel {
                     // Explain tab — only when plan exists
                     if self.explain_plan.is_some() {
                         let is_active = self.active_tab == PanelTab::Plan;
-                        let text = egui::RichText::new("⚡ Plan")
+                        let text = egui::RichText::new(i18n.tab_plan())
                             .color(if is_active { egui::Color32::from_rgb(100, 200, 255) } else { text_dim });
                         let btn = egui::Button::new(text)
                             .fill(egui::Color32::TRANSPARENT)
@@ -713,9 +757,9 @@ impl QueryPanel {
                         let error_count = self.log.iter().filter(|e| e.kind == LogKind::Error).count();
                         let is_active = self.active_tab == PanelTab::Messages;
                         let label_str = if error_count > 0 {
-                            format!("Messages ({})", error_count)
+                            i18n.tab_messages_n(error_count)
                         } else {
-                            "Messages".to_owned()
+                            i18n.tab_messages().to_owned()
                         };
                         let msg_color = if error_count > 0 {
                             egui::Color32::from_rgb(220, 80, 80)
@@ -745,7 +789,7 @@ impl QueryPanel {
                     // ── Filter bar ───────────────────────────────────────────
                     if self.result.is_some() {
                         ui.horizontal(|ui| {
-                            let hint = egui::RichText::new("🔍 Filter results…")
+                            let hint = egui::RichText::new(i18n.filter_hint())
                                 .color(egui::Color32::from_rgb(90, 95, 100));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.result_filter)
@@ -802,7 +846,7 @@ impl QueryPanel {
                                 table.edit_needs_focus = self.edit_needs_focus;
                             }
 
-                            let out = table.show(ui);
+                            let out = table.show(ui, i18n);
 
                             // Save back edit state (value may have changed)
                             if let (Some(r), Some(c)) = (table.edit_row, table.edit_col) {
@@ -876,33 +920,33 @@ impl QueryPanel {
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Running…");
+                            ui.label(i18n.lbl_running());
                         });
                     } else {
-                        ui.label("No results yet. Run a query with F5 or Ctrl+Enter.");
+                        ui.label(i18n.lbl_no_results_yet());
                     }
                 }
                 PanelTab::Plan => {
                     if let Some(plan) = &self.explain_plan {
-                        render_explain(ui, plan);
+                        render_explain(ui, plan, i18n);
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Running EXPLAIN…");
+                            ui.label(i18n.lbl_running_explain());
                         });
                     }
                 }
                 PanelTab::Messages => {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("{} events", self.log.len()))
+                            egui::RichText::new(i18n.lbl_events(self.log.len()))
                                 .small()
                                 .color(egui::Color32::GRAY),
                         );
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.small_button("Clear").clicked() {
+                                if ui.small_button(i18n.btn_clear()).clicked() {
                                     self.log.clear();
                                 }
                             },
@@ -914,7 +958,7 @@ impl QueryPanel {
                         ui.add_space(12.0);
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                egui::RichText::new("No messages yet.")
+                                egui::RichText::new(i18n.lbl_no_messages())
                                     .color(egui::Color32::GRAY)
                                     .italics(),
                             );
@@ -976,7 +1020,7 @@ impl QueryPanel {
                 }
                 PanelTab::History => {
                     ui.horizontal(|ui| {
-                        ui.label("Search:");
+                        ui.label(i18n.label_search());
                         ui.text_edit_singleline(&mut self.history_search);
                     });
                     ui.separator();
@@ -1027,7 +1071,7 @@ impl QueryPanel {
                 let can_prev = page > 0;
                 let can_next = row_count == PAGE_SIZE; // if we got a full page, there may be more
 
-                if ui.add_enabled(can_prev, egui::Button::new("← Prev")).clicked() {
+                if ui.add_enabled(can_prev, egui::Button::new(i18n.btn_prev_page())).clicked() {
                     if let Some(state) = &mut self.browse {
                         state.page -= 1;
                         let sql = state.build_sql();
@@ -1036,9 +1080,9 @@ impl QueryPanel {
                     }
                 }
 
-                ui.label(format!(" Page {} ", page + 1));
+                ui.label(i18n.lbl_page(page + 1));
 
-                if ui.add_enabled(can_next, egui::Button::new("Next →")).clicked() {
+                if ui.add_enabled(can_next, egui::Button::new(i18n.btn_next_page())).clicked() {
                     if let Some(state) = &mut self.browse {
                         state.page += 1;
                         let sql = state.build_sql();
@@ -1049,7 +1093,7 @@ impl QueryPanel {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(format!("{} rows/page", PAGE_SIZE))
+                        egui::RichText::new(i18n.lbl_rows_per_page(PAGE_SIZE))
                             .small()
                             .color(egui::Color32::GRAY),
                     );
@@ -1059,12 +1103,12 @@ impl QueryPanel {
 
         // Floating popup — rendered last so it draws on top of everything.
         let ctx = ui.ctx().clone();
-        self.show_cell_popup(&ctx);
+        self.show_cell_popup(&ctx, i18n);
     }
 
     // ── Cell value popup ─────────────────────────────────────────────────────
 
-    fn show_cell_popup(&mut self, ctx: &egui::Context) {
+    fn show_cell_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
         let Some(popup) = self.cell_popup.take() else { return };
 
         let mut open = true;
@@ -1094,14 +1138,14 @@ impl QueryPanel {
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Copy").clicked() {
+                    if ui.button(i18n.btn_copy()).clicked() {
                         ctx.copy_text(popup.value.clone());
                     }
-                    if is_browse && ui.button("Edit").clicked() {
+                    if is_browse && ui.button(i18n.btn_edit()).clicked() {
                         start_edit = true;
                     }
                     // Copy as INSERT statement
-                    if ui.button("Copy as INSERT").on_hover_text("Copy the entire row as an INSERT statement").clicked() {
+                    if ui.button(i18n.btn_copy_as_insert()).on_hover_text(i18n.hover_copy_insert()).clicked() {
                         if let Some(result) = &self.result {
                             let cols: Vec<&str> =
                                 result.columns.iter().map(|c| c.as_str()).collect();
@@ -1137,14 +1181,11 @@ impl QueryPanel {
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button(i18n.btn_close()).clicked() {
                                 close_clicked = true;
                             }
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{} chars",
-                                    popup.value.chars().count()
-                                ))
+                                egui::RichText::new(i18n.lbl_chars(popup.value.chars().count()))
                                 .small()
                                 .color(egui::Color32::GRAY),
                             );
@@ -1187,9 +1228,8 @@ impl QueryPanel {
             .unwrap_or_default();
 
         if pk_cols.is_empty() {
-            self.push_log(LogEntry::warning(format!(
-                "Cannot edit: no primary key found on \"{schema}\".\"{table}\""
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::warning(i18n.warn_no_pk(&schema, &table)));
             self.active_tab = PanelTab::Messages;
             return;
         }
@@ -1244,6 +1284,14 @@ impl QueryPanel {
 }
 
 /// Native save-file dialog via `rfd`. Falls back to home dir if dialog is cancelled.
+fn pick_open_sql_file() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("SQL files", &["sql"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 fn pick_save_path(ext: &str) -> Option<String> {
     let filter_name = match ext {
         "csv" => "CSV files",

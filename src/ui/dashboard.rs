@@ -1,6 +1,7 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::db::metadata::{ConnInfo, IndexStat, TableStat};
+use crate::i18n::I18n;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -63,20 +64,20 @@ impl Dashboard {
 
     /// Render the dashboard content inline (no Window wrapper).
     /// Returns `(refresh_clicked, kill_pid)`.
-    pub fn show_inline(&mut self, ui: &mut egui::Ui) -> (bool, Option<String>) {
+    pub fn show_inline(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> (bool, Option<String>) {
         let mut refresh_clicked = false;
         let mut kill_pid: Option<String> = None;
 
         // Toolbar
         ui.horizontal(|ui| {
-            if ui.button("↺ Refresh").clicked() {
+            if ui.button(i18n.btn_refresh()).clicked() {
                 refresh_clicked = true;
             }
             ui.separator();
 
-            ui.selectable_value(&mut self.active_tab, DashTab::TableSizes, "Table Sizes");
-            ui.selectable_value(&mut self.active_tab, DashTab::Connections, "Connections");
-            ui.selectable_value(&mut self.active_tab, DashTab::IndexStats, "Index Stats");
+            ui.selectable_value(&mut self.active_tab, DashTab::TableSizes, i18n.dash_tab_table_sizes());
+            ui.selectable_value(&mut self.active_tab, DashTab::Connections, i18n.dash_tab_connections());
+            ui.selectable_value(&mut self.active_tab, DashTab::IndexStats, i18n.dash_tab_index_stats());
         });
 
         ui.separator();
@@ -86,7 +87,7 @@ impl Dashboard {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     ui.label(
-                        egui::RichText::new("Loading…")
+                        egui::RichText::new(i18n.lbl_loading())
                             .color(egui::Color32::GRAY)
                             .italics(),
                     );
@@ -97,20 +98,20 @@ impl Dashboard {
                     ui.add_space(40.0);
                     ui.horizontal(|ui| {
                         ui.spinner();
-                        ui.label("Loading dashboard data…");
+                        ui.label(i18n.lbl_loading_dashboard());
                     });
                 });
             }
             DashboardState::Loaded { table_stats, connections, index_stats } => {
                 match self.active_tab {
                     DashTab::TableSizes => {
-                        show_table_sizes(ui, table_stats);
+                        show_table_sizes(ui, table_stats, i18n);
                     }
                     DashTab::Connections => {
-                        kill_pid = show_connections(ui, connections);
+                        kill_pid = show_connections(ui, connections, i18n);
                     }
                     DashTab::IndexStats => {
-                        show_index_stats(ui, index_stats);
+                        show_index_stats(ui, index_stats, i18n);
                     }
                 }
             }
@@ -122,7 +123,7 @@ impl Dashboard {
 
 // ── Table rendering helpers ───────────────────────────────────────────────────
 
-fn show_table_sizes(ui: &mut egui::Ui, stats: &[TableStat]) {
+fn show_table_sizes(ui: &mut egui::Ui, stats: &[TableStat], i18n: &I18n) {
     let available = ui.available_height();
     TableBuilder::new(ui)
         .striped(true)
@@ -134,11 +135,11 @@ fn show_table_sizes(ui: &mut egui::Ui, stats: &[TableStat]) {
         .column(Column::initial(90.0).resizable(true))   // Table
         .column(Column::initial(90.0).resizable(true))   // Indexes
         .header(22.0, |mut header| {
-            header.col(|ui| { ui.strong("Schema"); });
-            header.col(|ui| { ui.strong("Table"); });
-            header.col(|ui| { ui.strong("Total"); });
-            header.col(|ui| { ui.strong("Table"); });
-            header.col(|ui| { ui.strong("Indexes"); });
+            header.col(|ui| { ui.strong(i18n.col_schema()); });
+            header.col(|ui| { ui.strong(i18n.col_table()); });
+            header.col(|ui| { ui.strong(i18n.col_total()); });
+            header.col(|ui| { ui.strong(i18n.col_table()); });
+            header.col(|ui| { ui.strong(i18n.col_indexes()); });
         })
         .body(|mut body| {
             for stat in stats {
@@ -153,7 +154,7 @@ fn show_table_sizes(ui: &mut egui::Ui, stats: &[TableStat]) {
         });
 }
 
-fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) -> Option<String> {
+fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo], i18n: &I18n) -> Option<String> {
     let available = ui.available_height();
     let mut kill_pid: Option<String> = None;
 
@@ -169,12 +170,12 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) -> Option<String> {
         .column(Column::remainder().resizable(true))     // Query
         .column(Column::initial(50.0))                   // Kill
         .header(22.0, |mut header| {
-            header.col(|ui| { ui.strong("PID"); });
-            header.col(|ui| { ui.strong("User"); });
-            header.col(|ui| { ui.strong("App"); });
-            header.col(|ui| { ui.strong("State"); });
-            header.col(|ui| { ui.strong("Duration"); });
-            header.col(|ui| { ui.strong("Query"); });
+            header.col(|ui| { ui.strong(i18n.col_pid()); });
+            header.col(|ui| { ui.strong(i18n.col_user()); });
+            header.col(|ui| { ui.strong(i18n.col_app()); });
+            header.col(|ui| { ui.strong(i18n.col_state()); });
+            header.col(|ui| { ui.strong(i18n.col_duration()); });
+            header.col(|ui| { ui.strong(i18n.col_query()); });
             header.col(|ui| { ui.strong(""); });
         })
         .body(|mut body| {
@@ -205,13 +206,13 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) -> Option<String> {
                     });
                     row.col(|ui| {
                         let btn = egui::Button::new(
-                            egui::RichText::new("Kill")
+                            egui::RichText::new(i18n.btn_kill())
                                 .small()
                                 .color(egui::Color32::from_rgb(220, 80, 80)),
                         )
                         .fill(egui::Color32::TRANSPARENT);
                         if ui.add(btn)
-                            .on_hover_text(format!("Terminate PID {}", conn.pid))
+                            .on_hover_text(i18n.hover_kill(&conn.pid))
                             .clicked()
                         {
                             kill_pid = Some(conn.pid.clone());
@@ -224,7 +225,7 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo]) -> Option<String> {
     kill_pid
 }
 
-fn show_index_stats(ui: &mut egui::Ui, stats: &[IndexStat]) {
+fn show_index_stats(ui: &mut egui::Ui, stats: &[IndexStat], i18n: &I18n) {
     let available = ui.available_height();
     TableBuilder::new(ui)
         .striped(true)
@@ -236,11 +237,11 @@ fn show_index_stats(ui: &mut egui::Ui, stats: &[IndexStat]) {
         .column(Column::initial(80.0).resizable(true))  // Size
         .column(Column::initial(70.0).resizable(true))  // Scans
         .header(22.0, |mut header| {
-            header.col(|ui| { ui.strong("Schema"); });
-            header.col(|ui| { ui.strong("Table"); });
-            header.col(|ui| { ui.strong("Index"); });
-            header.col(|ui| { ui.strong("Size"); });
-            header.col(|ui| { ui.strong("Scans"); });
+            header.col(|ui| { ui.strong(i18n.col_schema()); });
+            header.col(|ui| { ui.strong(i18n.col_table()); });
+            header.col(|ui| { ui.strong(i18n.col_index()); });
+            header.col(|ui| { ui.strong(i18n.col_size()); });
+            header.col(|ui| { ui.strong(i18n.col_scans()); });
         })
         .body(|mut body| {
             for stat in stats {

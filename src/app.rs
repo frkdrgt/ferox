@@ -4,6 +4,7 @@ use crate::{
     config::AppConfig,
     db::{DbCommand, DbEvent, DbHandle},
     history::QueryHistory,
+    i18n::{I18n, Lang},
     ui::{
         connection_dialog::ConnectionDialog,
         join_builder::{JoinAction, JoinBuilder},
@@ -56,6 +57,9 @@ pub struct PgClientApp {
     pub show_connection_dialog: bool,
     /// When true, DML statements are automatically wrapped in BEGIN.
     pub safe_mode: bool,
+    pub i18n: I18n,
+    pub show_about: bool,
+    pub about_texture: Option<egui::TextureHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +82,29 @@ impl PgClientApp {
 
         let config = AppConfig::load().unwrap_or_default();
         let history = QueryHistory::load().unwrap_or_default();
+        let i18n = I18n::new(config.language);
+
+        // Load logo texture for the About dialog.
+        let about_texture = {
+            let bytes = include_bytes!("../assets/logo.png");
+            if let Ok(img) = image::load_from_memory(bytes) {
+                let img = img
+                    .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+                    .into_rgba8();
+                let (w, h) = img.dimensions();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    &img.into_raw(),
+                );
+                Some(cc.egui_ctx.load_texture(
+                    "about_logo",
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                ))
+            } else {
+                None
+            }
+        };
 
         Self {
             connections: Vec::new(),
@@ -91,6 +118,9 @@ impl PgClientApp {
             history,
             show_connection_dialog: true,
             safe_mode: false,
+            i18n,
+            show_about: false,
+            about_texture,
         }
     }
 
@@ -284,9 +314,10 @@ impl PgClientApp {
     }
 
     fn render_menu(&mut self, ui: &mut egui::Ui) {
+        let i18n = self.i18n;
         egui::menu::bar(ui, |ui| {
-            ui.menu_button("Connection", |ui| {
-                if ui.button("New Connection…").clicked() {
+            ui.menu_button(i18n.menu_connection(), |ui| {
+                if ui.button(i18n.menu_new_connection()).clicked() {
                     self.show_connection_dialog = true;
                     self.connection_dialog.reset();
                     ui.close_menu();
@@ -341,7 +372,7 @@ impl PgClientApp {
                     }
                 }
                 ui.separator();
-                if ui.button("Disconnect").clicked() {
+                if ui.button(i18n.menu_disconnect()).clicked() {
                     if let Some(conn) = self.connections.get(self.active_conn) {
                         let _ = conn.db_tx.send(DbCommand::Disconnect);
                     }
@@ -349,22 +380,22 @@ impl PgClientApp {
                 }
             });
 
-            ui.menu_button("Query", |ui| {
+            ui.menu_button(i18n.menu_query(), |ui| {
                 let safe_label = if self.safe_mode {
-                    "🛡 Safe Mode  ✓"
+                    i18n.menu_safe_mode_on()
                 } else {
-                    "🛡 Safe Mode"
+                    i18n.menu_safe_mode()
                 };
                 if ui.button(safe_label).clicked() {
                     self.safe_mode = !self.safe_mode;
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Join Builder…").clicked() {
+                if ui.button(i18n.menu_join_builder()).clicked() {
                     self.join_builder.open();
                     ui.close_menu();
                 }
-                if ui.button("📊 Dashboard").clicked() {
+                if ui.button(i18n.menu_dashboard()).clicked() {
                     let active_conn_id = self
                         .connections
                         .get(self.active_conn)
@@ -374,25 +405,25 @@ impl PgClientApp {
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Execute (F5 / Ctrl+Enter)").clicked() {
+                if ui.button(i18n.menu_execute()).clicked() {
                     self.execute_query();
                     ui.close_menu();
                 }
-                if ui.button("Cancel (Ctrl+C)").clicked() {
+                if ui.button(i18n.menu_cancel()).clicked() {
                     if let Some(conn) = self.connections.get(self.active_conn) {
                         let _ = conn.db_tx.send(DbCommand::CancelQuery);
                     }
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Export as CSV…").clicked() {
+                if ui.button(i18n.menu_export_csv()).clicked() {
                     let active_conn_id = self.tab_manager.active_tab_conn_id();
                     if let Some(conn) = self.connections.iter().find(|c| c.id == active_conn_id) {
                         self.tab_manager.trigger_export_csv(&conn.db_tx);
                     }
                     ui.close_menu();
                 }
-                if ui.button("Export as JSON…").clicked() {
+                if ui.button(i18n.menu_export_json()).clicked() {
                     let active_conn_id = self.tab_manager.active_tab_conn_id();
                     if let Some(conn) = self.connections.iter().find(|c| c.id == active_conn_id) {
                         self.tab_manager.trigger_export_json(&conn.db_tx);
@@ -400,10 +431,35 @@ impl PgClientApp {
                     ui.close_menu();
                 }
             });
+
+            ui.menu_button(i18n.menu_settings(), |ui| {
+                ui.menu_button(i18n.menu_language(), |ui| {
+                    if ui.selectable_label(self.i18n.0 == Lang::En, "English").clicked() {
+                        self.i18n = I18n::new(Lang::En);
+                        self.config.language = Lang::En;
+                        let _ = self.config.save();
+                        self.tab_manager.set_lang(Lang::En);
+                        ui.close_menu();
+                    }
+                    if ui.selectable_label(self.i18n.0 == Lang::Tr, "Türkçe").clicked() {
+                        self.i18n = I18n::new(Lang::Tr);
+                        self.config.language = Lang::Tr;
+                        let _ = self.config.save();
+                        self.tab_manager.set_lang(Lang::Tr);
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
+                if ui.button(i18n.menu_about()).clicked() {
+                    self.show_about = true;
+                    ui.close_menu();
+                }
+            });
         });
     }
 
     fn render_status_bar(&self, ctx: &egui::Context) {
+        let i18n = self.i18n;
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let status = self
@@ -414,10 +470,10 @@ impl PgClientApp {
 
                 match status {
                     ConnectionStatus::Disconnected => {
-                        ui.colored_label(egui::Color32::GRAY, "⬤  Disconnected");
+                        ui.colored_label(egui::Color32::GRAY, i18n.status_disconnected());
                     }
                     ConnectionStatus::Connecting => {
-                        ui.colored_label(egui::Color32::YELLOW, "⬤  Connecting…");
+                        ui.colored_label(egui::Color32::YELLOW, i18n.status_connecting());
                     }
                     ConnectionStatus::Connected { host, database } => {
                         ui.colored_label(
@@ -426,7 +482,7 @@ impl PgClientApp {
                         );
                     }
                     ConnectionStatus::Error(msg) => {
-                        ui.colored_label(egui::Color32::RED, format!("⬤  Error: {msg}"));
+                        ui.colored_label(egui::Color32::RED, i18n.status_error(msg));
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -435,7 +491,7 @@ impl PgClientApp {
                         ui.label(" | ");
                     }
                     if let Some(row_count) = self.tab_manager.result_row_count() {
-                        ui.label(format!("{row_count} rows"));
+                        ui.label(i18n.status_rows(row_count));
                     }
                 });
             });
@@ -462,11 +518,76 @@ impl PgClientApp {
             };
             let _ = self.connections[idx].db_tx.send(cmd);
         } else {
-            self.tab_manager.set_error_for(conn_id, "Not connected".into());
+            self.tab_manager.set_error_for(conn_id, self.i18n.err_not_connected().to_owned());
         }
     }
 
+    fn render_about_window(&mut self, ctx: &egui::Context) {
+        let i18n = self.i18n;
+        let mut open = self.show_about;
+        egui::Window::new(i18n.menu_about())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([340.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    // Logo
+                    if let Some(texture) = &self.about_texture {
+                        ui.image((texture.id(), egui::Vec2::splat(64.0)));
+                        ui.add_space(8.0);
+                    }
+                    // App name
+                    ui.label(
+                        egui::RichText::new("ferox")
+                            .size(28.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(78, 159, 222)),
+                    );
+                    ui.add_space(2.0);
+                    // Version
+                    ui.label(
+                        egui::RichText::new(format!("{} {}", i18n.about_version(), env!("CARGO_PKG_VERSION")))
+                            .small()
+                            .color(egui::Color32::from_gray(150)),
+                    );
+                    ui.add_space(8.0);
+                    // Description
+                    ui.label(
+                        egui::RichText::new(i18n.about_desc())
+                            .color(egui::Color32::from_gray(200)),
+                    );
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    // Repository
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{}:", i18n.about_repository()))
+                                .small()
+                                .color(egui::Color32::from_gray(130)),
+                        );
+                        ui.hyperlink_to(
+                            egui::RichText::new("github.com/frkdrgt/ferox")
+                                .small()
+                                .color(egui::Color32::from_rgb(78, 159, 222)),
+                            "https://github.com/frkdrgt/ferox",
+                        );
+                    });
+                    ui.add_space(10.0);
+                    if ui.button(i18n.btn_close()).clicked() {
+                        self.show_about = false;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        self.show_about = open;
+    }
+
     fn render_connection_switcher(&mut self, ui: &mut egui::Ui) {
+        let i18n = self.i18n;
         // Collect display data to avoid borrow issues
         let data: Vec<(usize, String, bool)> = self
             .connections
@@ -493,7 +614,7 @@ impl PgClientApp {
                     new_active = *i;
                 }
             }
-            if ui.small_button("＋").on_hover_text("New connection").clicked() {
+            if ui.small_button("＋").on_hover_text(i18n.hover_new_connection()).clicked() {
                 open_dialog = true;
             }
         });
@@ -518,12 +639,12 @@ impl eframe::App for PgClientApp {
             .get(self.active_conn)
             .map(|c| match &c.status {
                 ConnectionStatus::Connected { database, host } => {
-                    format!("pgclient — {database} @ {host}")
+                    format!("ferox — {database} @ {host}")
                 }
-                ConnectionStatus::Connecting => "pgclient — connecting…".to_owned(),
-                _ => "pgclient".to_owned(),
+                ConnectionStatus::Connecting => "ferox — connecting…".to_owned(),
+                _ => "ferox".to_owned(),
             })
-            .unwrap_or_else(|| "pgclient".to_owned());
+            .unwrap_or_else(|| "ferox".to_owned());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
         // Update autocomplete completion data for each connection.
@@ -575,18 +696,19 @@ impl eframe::App for PgClientApp {
         let active_in_tx = self.connections.get(self.active_conn)
             .map(|c| c.in_transaction)
             .unwrap_or(false);
+        let i18n = self.i18n;
         if active_in_tx {
             egui::TopBottomPanel::top("safe_mode_banner").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 193, 7),
-                        "⚠  Safe Mode — transaction open. Changes are not yet saved.",
+                        i18n.safe_mode_tx_banner(),
                     );
                     ui.add_space(12.0);
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("✓  COMMIT")
+                                egui::RichText::new(i18n.btn_commit())
                                     .color(egui::Color32::from_rgb(40, 40, 40)),
                             )
                             .fill(egui::Color32::from_rgb(80, 200, 120)),
@@ -601,7 +723,7 @@ impl eframe::App for PgClientApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("✕  ROLLBACK")
+                                egui::RichText::new(i18n.btn_rollback())
                                     .color(egui::Color32::from_rgb(40, 40, 40)),
                             )
                             .fill(egui::Color32::from_rgb(220, 80, 80)),
@@ -615,12 +737,11 @@ impl eframe::App for PgClientApp {
                 });
             });
         } else if self.safe_mode {
-            // No open transaction — show subtle safe mode indicator
             egui::TopBottomPanel::top("safe_mode_indicator").show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(
                         egui::Color32::from_rgb(86, 156, 214),
-                        "🛡 Safe Mode ON — DML statements will be wrapped in BEGIN automatically.",
+                        i18n.safe_mode_indicator(),
                     );
                 });
             });
@@ -628,6 +749,11 @@ impl eframe::App for PgClientApp {
 
         // Status bar at bottom
         self.render_status_bar(ctx);
+
+        // About window
+        if self.show_about {
+            self.render_about_window(ctx);
+        }
 
         // Left sidebar — connection switcher + schema browser
         egui::SidePanel::left("sidebar")
@@ -644,12 +770,12 @@ impl eframe::App for PgClientApp {
                 let active_conn_id = self.connections.get(self.active_conn).map(|c| c.id);
 
                 let actions = if let Some(conn) = self.connections.get_mut(self.active_conn) {
-                    conn.sidebar.show(ui)
+                    conn.sidebar.show(ui, &i18n)
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(20.0);
-                        ui.label(egui::RichText::new("No connection").color(egui::Color32::GRAY));
-                        if ui.button("Connect…").clicked() {
+                        ui.label(egui::RichText::new(i18n.lbl_no_connection()).color(egui::Color32::GRAY));
+                        if ui.button(i18n.btn_connect_dialog()).clicked() {
                             self.show_connection_dialog = true;
                             self.connection_dialog.reset();
                         }
@@ -762,7 +888,7 @@ impl eframe::App for PgClientApp {
                 .iter()
                 .map(|c| (c.id, &c.db_tx))
                 .collect();
-            self.tab_manager.show(ui, &conn_refs, &mut self.history);
+            self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n);
         });
 
         // Dashboard refresh: if show_inline returned true (refresh button), reload
@@ -784,7 +910,7 @@ impl eframe::App for PgClientApp {
             .map(|c| c.sidebar.all_tables_with_columns())
             .unwrap_or_default();
         self.join_builder.update_available(jb_tables);
-        for action in self.join_builder.show(ctx) {
+        for action in self.join_builder.show(ctx, &i18n) {
             match action {
                 JoinAction::Run(sql) => {
                     self.tab_manager.set_sql(sql);
@@ -802,7 +928,7 @@ impl eframe::App for PgClientApp {
         }
 
         // Table dialog (New / Edit)
-        if let Some(action) = self.table_dialog.show(ctx) {
+        if let Some(action) = self.table_dialog.show(ctx, &i18n) {
             match action {
                 TableDialogAction::ExecuteDdl { sql, refresh_schema } => {
                     if let Some(conn) = self.connections.get_mut(self.active_conn) {
@@ -816,13 +942,13 @@ impl eframe::App for PgClientApp {
         // Connection dialog modal
         if self.show_connection_dialog {
             let mut open = true;
-            egui::Window::new("Connect to PostgreSQL")
+            egui::Window::new(i18n.window_connect_to_pg())
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    if let Some(profile) = self.connection_dialog.show(ui) {
+                    if let Some(profile) = self.connection_dialog.show(ui, &i18n) {
                         // Save profile if requested
                         if self.connection_dialog.should_save {
                             self.config.connections.push(profile.clone());

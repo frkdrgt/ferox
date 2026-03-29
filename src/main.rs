@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod db;
 mod history;
+mod i18n;
 mod logger;
 mod ui;
 
@@ -25,7 +26,7 @@ fn main() -> anyhow::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("pgclient")
+            .with_title("ferox")
             .with_inner_size([1200.0, 750.0])
             .with_min_inner_size([800.0, 500.0])
             .with_icon(load_icon()),
@@ -33,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     let result = eframe::run_native(
-        "pgclient",
+        "ferox",
         native_options,
         Box::new(|cc| Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>),
     );

@@ -1,6 +1,7 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::db::query::{CellValue, QueryResult};
+use crate::i18n::I18n;
 
 const NULL_COLOR: egui::Color32 = egui::Color32::from_rgb(128, 100, 100);
 const NULL_LABEL: &str = "<null>";
@@ -62,12 +63,12 @@ impl<'a> ResultTable<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> TableOutput {
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> TableOutput {
         if self.result.columns.is_empty() {
             if let Some(n) = self.result.rows_affected {
-                ui.label(format!("Query OK — {n} rows affected"));
+                ui.label(i18n.query_ok_rows(n));
             } else {
-                ui.label("No results");
+                ui.label(i18n.lbl_no_results());
             }
             return TableOutput::default();
         }

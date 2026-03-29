@@ -1,5 +1,7 @@
 use egui::{Color32, ComboBox, RichText, ScrollArea, TextEdit};
 
+use crate::i18n::I18n;
+
 // ── Join type ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Default)]
@@ -101,7 +103,7 @@ impl JoinBuilder {
     }
 
     /// Render and return any actions produced this frame.
-    pub fn show(&mut self, ctx: &egui::Context) -> Vec<JoinAction> {
+    pub fn show(&mut self, ctx: &egui::Context, i18n: &I18n) -> Vec<JoinAction> {
         if !self.open {
             return Vec::new();
         }
@@ -109,14 +111,14 @@ impl JoinBuilder {
         let mut actions: Vec<JoinAction> = Vec::new();
         let mut window_open = true;
 
-        egui::Window::new("Join Builder")
+        egui::Window::new(i18n.jb_window_title())
             .open(&mut window_open)
             .resizable(true)
             .min_width(720.0)
             .min_height(520.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                self.render(ui, &mut actions);
+                self.render(ui, &mut actions, i18n);
             });
 
         if !window_open {
@@ -127,11 +129,11 @@ impl JoinBuilder {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    fn render(&mut self, ui: &mut egui::Ui, actions: &mut Vec<JoinAction>) {
+    fn render(&mut self, ui: &mut egui::Ui, actions: &mut Vec<JoinAction>, i18n: &I18n) {
         ScrollArea::vertical().show(ui, |ui| {
 
             // ── 1. Tables ─────────────────────────────────────────────────────
-            section_header(ui, "TABLES");
+            section_header(ui, i18n.jb_section_tables());
 
             let mut remove_table: Option<usize> = None;
             for (i, t) in self.tables.iter().enumerate() {
@@ -144,12 +146,12 @@ impl JoinBuilder {
                     ui.weak("→");
                     ui.label(format!("{}.{}", t.schema, t.table));
                     if t.columns.is_empty() {
-                        ui.weak("(⟳ loading…)");
+                        ui.weak(i18n.jb_loading_cols());
                     } else {
-                        ui.weak(format!("({} cols)", t.columns.len()));
+                        ui.weak(i18n.jb_n_cols(t.columns.len()));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                        if ui.small_button("✕").clicked() {
                             remove_table = Some(i);
                         }
                     });
@@ -208,7 +210,7 @@ impl JoinBuilder {
                             });
                     });
 
-                if ui.button("＋  Add Table").clicked() {
+                if ui.button(i18n.jb_btn_add_table()).clicked() {
                     if let Some((schema, tables)) = self.available.get(self.add_schema_idx) {
                         if let Some((table, cols)) = tables.get(self.add_table_idx) {
                             let key = (schema.clone(), table.clone());
@@ -242,11 +244,11 @@ impl JoinBuilder {
             ui.add_space(10.0);
 
             // ── 2. Join conditions ────────────────────────────────────────────
-            section_header(ui, "JOIN CONDITIONS");
+            section_header(ui, i18n.jb_section_conditions());
 
             if self.tables.len() < 2 {
                 ui.label(
-                    RichText::new("Add at least 2 tables above.")
+                    RichText::new(i18n.jb_hint_add_tables())
                         .italics()
                         .color(Color32::from_gray(100)),
                 );
@@ -307,7 +309,7 @@ impl JoinBuilder {
                     self.conditions.remove(i);
                 }
 
-                if ui.button("＋  Add Join Condition").clicked() {
+                if ui.button(i18n.jb_btn_add_condition()).clicked() {
                     self.conditions.push(Condition {
                         left_idx:  0, left_col:  String::new(),
                         right_idx: (tc - 1).min(1), right_col: String::new(),
@@ -319,7 +321,7 @@ impl JoinBuilder {
             ui.add_space(10.0);
 
             // ── 3. SQL preview ────────────────────────────────────────────────
-            section_header(ui, "GENERATED SQL");
+            section_header(ui, i18n.jb_section_sql());
 
             let sql = self.generate_sql();
             let mut sql_display = sql.clone();
@@ -340,22 +342,22 @@ impl JoinBuilder {
             ui.horizontal(|ui| {
                 let has_sql = !sql.trim().is_empty();
 
-                if ui.add_enabled(has_sql, egui::Button::new("▶  Run"))
-                    .on_hover_text("Execute and show results").clicked()
+                if ui.add_enabled(has_sql, egui::Button::new(i18n.jb_btn_run()))
+                    .on_hover_text(i18n.jb_hover_run()).clicked()
                 {
                     actions.push(JoinAction::Run(sql.clone()));
                     self.open = false;
                 }
-                if ui.add_enabled(has_sql, egui::Button::new("✎  Send to Editor"))
-                    .on_hover_text("Paste SQL into the active query tab").clicked()
+                if ui.add_enabled(has_sql, egui::Button::new(i18n.jb_btn_send_editor()))
+                    .on_hover_text(i18n.jb_hover_send_editor()).clicked()
                 {
                     actions.push(JoinAction::SendToEditor(sql.clone()));
                     self.open = false;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() { self.open = false; }
-                    if ui.button("↺  Reset").on_hover_text("Clear all").clicked() {
+                    if ui.button(i18n.btn_close()).clicked() { self.open = false; }
+                    if ui.button(i18n.jb_btn_reset()).on_hover_text(i18n.jb_hover_reset()).clicked() {
                         self.tables.clear();
                         self.conditions.clear();
                         self.requested.clear();

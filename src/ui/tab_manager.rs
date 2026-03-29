@@ -6,6 +6,7 @@ use egui::{Color32, RichText, Sense};
 use crate::db::metadata::{ConnInfo, ErTableInfo, IndexStat, TableStat};
 use crate::db::{DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::i18n::{I18n, Lang};
 use crate::ui::dashboard::Dashboard;
 use crate::ui::er_diagram::ErDiagram;
 use crate::ui::query_panel::QueryPanel;
@@ -406,6 +407,15 @@ impl TabManager {
         }
     }
 
+    /// Propagate language change to all Query panels.
+    pub fn set_lang(&mut self, lang: Lang) {
+        for t in &mut self.tabs {
+            if let Some(p) = t.panel_mut() {
+                p.lang = lang;
+            }
+        }
+    }
+
     pub fn update_completion_data_for(&mut self, conn_id: usize, tables: Vec<String>, columns: Vec<String>) {
         for t in &mut self.tabs {
             if t.conn_id == conn_id {
@@ -436,6 +446,7 @@ impl TabManager {
         ui: &mut egui::Ui,
         conns: &[(usize, &Sender<DbCommand>)],
         history: &mut QueryHistory,
+        i18n: &I18n,
     ) {
         // ── Keyboard shortcuts ────────────────────────────────────────────────
         let active_conn_id = self.active_tab_conn_id();
@@ -458,7 +469,7 @@ impl TabManager {
         }
 
         // ── Tab bar ───────────────────────────────────────────────────────────
-        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui);
+        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui, i18n);
         if let Some(idx) = to_select {
             self.active = idx;
         }
@@ -484,7 +495,7 @@ impl TabManager {
         });
 
         if tab_kind == Some(0) {
-            let (refresh, kill_pid) = self.dashboard.show_inline(ui);
+            let (refresh, kill_pid) = self.dashboard.show_inline(ui, i18n);
             if refresh {
                 self.dashboard.set_loading();
             }
@@ -500,7 +511,7 @@ impl TabManager {
         } else if tab_kind == Some(1) {
             if let Some(tab) = self.tabs.get_mut(active_idx) {
                 if let TabContent::ErDiagram(d) = &mut tab.content {
-                    d.show(ui);
+                    d.show(ui, i18n);
                 }
             }
         } else if let Some(tab) = self.tabs.get(active_idx) {
@@ -512,7 +523,7 @@ impl TabManager {
                 // Detect if the panel starts a query from within its own show()
                 let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                 if let Some(p) = self.tabs[active_idx].panel_mut() {
-                    p.show(ui, db_tx, history);
+                    p.show(ui, db_tx, history, i18n);
                 }
                 let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                 if !was_running && is_running_now {
@@ -522,7 +533,7 @@ impl TabManager {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     ui.label(
-                        egui::RichText::new("Connection not available")
+                        egui::RichText::new(i18n.lbl_no_connection_available())
                             .color(egui::Color32::GRAY)
                             .italics(),
                     );
@@ -536,6 +547,7 @@ impl TabManager {
     fn render_tab_bar(
         &self,
         ui: &mut egui::Ui,
+        i18n: &I18n,
     ) -> (Option<usize>, Option<usize>, bool, Option<TabContextAction>) {
         let mut to_select: Option<usize> = None;
         let mut to_close: Option<usize> = None;
@@ -617,17 +629,17 @@ impl TabManager {
                             }
                             label_r.context_menu(|ui| {
                                 if tab_count > 1 {
-                                    if ui.button("Close tab").clicked() {
+                                    if ui.button(i18n.tab_close()).clicked() {
                                         to_close = Some(tab_i);
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("Close other tabs").clicked() {
+                                    if ui.button(i18n.tab_close_others()).clicked() {
                                         ctx_action = Some(TabContextAction::CloseOthers(tab_i));
                                         ui.close_menu();
                                     }
                                 }
-                                if ui.button("Close all tabs").clicked() {
+                                if ui.button(i18n.tab_close_all()).clicked() {
                                     ctx_action = Some(TabContextAction::CloseAll);
                                     ui.close_menu();
                                 }

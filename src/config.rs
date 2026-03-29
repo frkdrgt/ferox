@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub use crate::i18n::Lang;
+
 fn default_ssh_port() -> u16 {
     22
 }
@@ -109,6 +111,8 @@ impl std::fmt::Display for SslMode {
 pub struct AppConfig {
     #[serde(default)]
     pub connections: Vec<ConnectionProfile>,
+    #[serde(default)]
+    pub language: Lang,
 }
 
 impl AppConfig {

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use egui::{Color32, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
 
 use crate::db::metadata::ErTableInfo;
+use crate::i18n::I18n;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -108,11 +109,11 @@ impl ErDiagram {
     }
 
     /// Draw the diagram. Returns true if a repaint is needed.
-    pub fn show(&mut self, ui: &mut egui::Ui) {
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) {
         match &self.state {
             ErDiagramState::Empty => {
                 ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new("No diagram loaded.").color(Color32::GRAY));
+                    ui.label(egui::RichText::new(i18n.er_no_diagram()).color(Color32::GRAY));
                 });
                 return;
             }
@@ -120,7 +121,7 @@ impl ErDiagram {
                 let schema = schema.clone();
                 ui.centered_and_justified(|ui| {
                     ui.label(
-                        egui::RichText::new(format!("Loading ER diagram for \"{}\"…", schema))
+                        egui::RichText::new(i18n.er_loading(&schema))
                             .color(Color32::GRAY),
                     );
                 });
@@ -129,7 +130,7 @@ impl ErDiagram {
             ErDiagramState::Error(msg) => {
                 let msg = msg.clone();
                 ui.centered_and_justified(|ui| {
-                    ui.colored_label(Color32::RED, format!("Error: {msg}"));
+                    ui.colored_label(Color32::RED, i18n.er_error(&msg));
                 });
                 return;
             }
@@ -145,12 +146,12 @@ impl ErDiagram {
         // ── Toolbar ───────────────────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new(format!("ER Diagram — {schema}"))
+                egui::RichText::new(i18n.er_title(&schema))
                     .strong()
                     .color(Color32::from_gray(200)),
             );
             ui.add_space(8.0);
-            if ui.small_button("Auto Layout").clicked() {
+            if ui.small_button(i18n.er_btn_auto_layout()).clicked() {
                 self.auto_layout(&schema, &tables);
             }
             if ui.small_button("−").clicked() {
@@ -160,7 +161,7 @@ impl ErDiagram {
             if ui.small_button("+").clicked() {
                 self.zoom = (self.zoom + 0.15).min(4.0);
             }
-            if ui.small_button("Reset").clicked() {
+            if ui.small_button(i18n.er_btn_reset()).clicked() {
                 self.pan = Vec2::ZERO;
                 self.zoom = 1.0;
             }

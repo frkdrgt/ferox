@@ -76,3 +76,4 @@
 - [ ] Stored procedure / function browser
 - [ ] Query formatter için klavye kısayolu
 - [ ] Code signing sertifikası (antivirüs false positive çözümü)
+- [ ] i18n planına bak

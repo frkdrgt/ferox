@@ -1,6 +1,6 @@
 [package]
 name = "ferox"
-version = "0.1.0"
+version = "0.2.3"
 edition = "2021"
 description = "Blazing-fast lightweight PostgreSQL client built in Rust"
 authors = []
