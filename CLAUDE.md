@@ -4,7 +4,7 @@
 Hafif bir masaüstü PostgreSQL client uygulaması. Rust + egui/eframe ile yazılmış.
 Hedef: DBeaver/DataGrip'e alternatif, <50MB RAM, <200ms startup.
 
-**Gerçek ölçümler (v0.2.x):** ~45–47 MB RAM, 6.9 MB binary (release LTO)
+**Gerçek ölçümler (v0.2.3):** ~45–47 MB RAM, 6.9 MB binary (release LTO)
 
 ## Tech Stack
 - **GUI**: egui 0.27 + eframe (immediate-mode, pure Rust; `accesskit` devre dışı)
@@ -16,6 +16,7 @@ Hedef: DBeaver/DataGrip'e alternatif, <50MB RAM, <200ms startup.
 - **Export**: serde_json + manuel CSV
 - **File Dialog**: rfd 0.14 (native OS diyaloğu)
 - **SQL Highlighting**: sıfırdan yazılmış tokenizer — `src/ui/syntax.rs` (syntect yok)
+- **i18n**: sıfırdan yazılmış — `src/i18n.rs` (sıfır bağımlılık)
 
 ## Mimari — Kritik Kural
 
@@ -34,6 +35,7 @@ src/
 ├── app.rs            — PgClientApp, eframe::App impl, event loop
 ├── config.rs         — ConnectionProfile, AppConfig (TOML)
 ├── history.rs        — QueryHistory (kalıcı, max 500)
+├── i18n.rs           — Lang enum (En|Tr), I18n(pub Lang) newtype, ~100+ method
 ├── logger.rs         — crash log (panic hook)
 ├── db/
 │   ├── mod.rs
@@ -86,6 +88,15 @@ cargo build --release # ~6.9MB binary, LTO
 - Sağ-tık context menu: Close tab / Close other tabs / Close all tabs
 - `running_tabs: HashMap<conn_id, tab_idx>` — sonuçları doğru taba yönlendirir
 
+## i18n (src/i18n.rs)
+- `Lang` enum: `En` (default) | `Tr` — `AppConfig.language` ile config'e kaydedilir
+- `I18n(pub Lang)` newtype — tüm UI string'leri için metod sağlar
+- Static string → `self.t("English", "Türkçe")` helper
+- Formatted string → `match self.0 { Lang::En => format!(...), Lang::Tr => format!(...) }`
+- Tüm `show()` fonksiyonları `i18n: &I18n` alır; `QueryPanel` içten log üreten metodlar için `pub lang: Lang` saklar
+- Dil değişikliği: `app.rs::render_menu()` → config kaydet + `tab_manager.set_lang()` çağır
+- Versiyon string'i: `env!("CARGO_PKG_VERSION")` — Cargo.toml'u güncellemek yeterli
+
 ## Tamamlanan Fazlar
 - **Faz 0**: Proje iskeleti, UI/DB thread ayrımı ✓
 - **Faz 1**: Bağlantı dialog, SSL/TLS, profil kaydetme ✓
@@ -94,6 +105,7 @@ cargo build --release # ~6.9MB binary, LTO
 - **Faz 4**: Data browser, sayfalama, DB-side ORDER BY, native export diyaloğu ✓
 - **Faz 5**: Uygulama ikonu, release CI/CD, UI modernizasyon ✓
 - **Faz 6**: Multi-statement queries, per-table tabs, view/matview browse fix, RAM optimizasyonları ✓
+- **Faz 7**: EN/TR i18n, Settings menüsü, About dialog, app title → ferox, v0.2.3 ✓
 
 ## Kalan İşler
 - Test Connection butonu (bağlantı dialog'unda)

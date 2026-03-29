@@ -25,12 +25,32 @@
 
 ---
 
+## Screenshots
+
+| Main editor | Dashboard |
+|:-----------:|:---------:|
+| ![Main screen](screenshots/main_screen.png) | ![Dashboard](screenshots/dashboard.png) |
+
+| EXPLAIN ANALYZE | Join Builder |
+|:---------------:|:------------:|
+| ![Explain](screenshots/explain_screen.png) | ![Join Builder](screenshots/join_builder.png) |
+
+<div align="center">
+
+![Menu](screenshots/main_menu.png)
+
+*Settings → Language for EN/TR switch · Settings → About*
+
+</div>
+
+---
+
 ## Features
 
 ### Core
-- **Multi-tab query editor** — Ctrl+T for new tab, Ctrl+W to close, right-click tab for Close / Close Others / Close All
+- **Multi-tab query editor** — Ctrl+T new tab, Ctrl+W close, right-click for Close / Close Others / Close All
 - **Per-table tabs** — clicking a table opens it in its own tab; existing tabs are reused
-- **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables, with live filter
+- **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables, live filter
 - **Data browser** — double-click any table or view to browse with server-side pagination & ORDER BY
 - **Inline editing** — double-click a cell to edit, Enter to commit, Escape to cancel
 - **Persistent query history** — last 500 queries, searchable, click to reload
@@ -38,19 +58,21 @@
 ### Query Tools
 - **Multi-statement execution** — paste multiple SQL statements separated by `;`, all run in sequence
 - **View DDL** — right-click any view or materialized view → Show DDL
-- **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node
+- **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node; optimization suggestions
 - **Safe mode transactions** — DML wrapped in explicit BEGIN/COMMIT/ROLLBACK
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
 - **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
+- **Join Builder** — visual multi-table JOIN composer (`Query → Join Builder…`)
 
 ### Developer Experience
 - **SQL syntax highlighting** — zero-dependency tokenizer, dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes
 - **SQL autocomplete** — table names, column names, keywords
-- **Connection profiles** — saved to `~/.config/ferox/config.toml`, SSL modes + SSH tunnel supported
+- **Connection profiles** — saved to `~/.config/ferox/config.toml`; SSL modes + SSH tunnel supported
+- **Multiple simultaneous connections** — per-connection sidebar, tabs, and DB threads
+- **ER diagram** — visual schema relationship viewer with FK arrows, pan/zoom, draggable nodes
+- **Database dashboard** — table sizes, index stats, active connections with kill support
 - **F5 / Ctrl+Enter** to run, **Ctrl+C** to cancel mid-query
-- **Native OS dialogs** — file pickers feel at home on Windows and macOS
-- **Database dashboard** — table sizes, index stats, active connections at a glance
-- **ER diagram** — visual schema relationship viewer
+- **EN / TR localisation** — full bilingual UI; language choice persists to config
 
 ---
 
@@ -58,17 +80,11 @@
 
 | Metric | Ferox |
 |--------|-------|
-| RAM at idle | **~45 MB**
-| Cold startup | **< 200 ms**
-| Binary size | **~7 MB**
+| RAM at idle | **~45 MB** |
+| Cold startup | **< 200 ms** |
+| Binary size | **~7 MB** |
 
 *Measured on Windows 10, release build with LTO.*
-
----
-
-## Screenshots
-
-> *Coming soon — contributions welcome!*
 
 ---
 
@@ -143,13 +159,16 @@ Profiles are stored automatically:
 
 ```toml
 [[connections]]
-name    = "prod-readonly"
-host    = "db.example.com"
-port    = 5432
-user    = "analyst"
+name     = "prod-readonly"
+host     = "db.example.com"
+port     = 5432
+user     = "analyst"
 password = ""        # leave empty to prompt
 database = "warehouse"
-ssl     = "require"
+ssl      = "require"
+
+[language]          # "en" or "tr"
+language = "en"
 ```
 
 Query history lives at `~/.local/share/ferox/history.txt` (max 500 entries).
@@ -202,10 +221,14 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 - [x] **Multiple simultaneous connections** — separate DB threads per connection
 - [x] **SSH tunnel** — connect through a jump host
 - [x] **ER diagram** — visual schema relationships
-- [x] **Query formatter** — one-click SQL beautification
 - [x] **Multi-statement queries** — run multiple statements separated by `;`
 - [x] **View DDL** — right-click any view or materialized view to see its definition
 - [x] **Safe mode transactions** — explicit BEGIN/COMMIT/ROLLBACK for DML
+- [x] **Join Builder** — visual multi-table JOIN composer
+- [x] **EN/TR localisation** — full bilingual UI, language persists to config
+- [x] **Settings & About** — Settings menu with language switcher and About dialog
+- [ ] **Test Connection** button in connection dialog
+- [ ] **Ctrl+A** select-all in query editor
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch
 - [ ] **Result diff** — compare two query results side-by-side

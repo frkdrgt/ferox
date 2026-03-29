@@ -1,6 +1,6 @@
 # Ferox — Yapılacaklar
 
-## Aktif (Faz 7)
+## Aktif (Faz 8)
 
 ### Küçük Eksikler
 - [ ] Bağlantı dialog'unda "Test Connection" butonu
@@ -11,6 +11,17 @@
 ---
 
 ## Tamamlanan
+
+### Faz 7 — i18n, Settings Menüsü, v0.2.3 ✓
+- [x] Tam EN/TR lokalizasyon — tüm UI string'leri çift dil; seçim config'e kaydediliyor
+- [x] `src/i18n.rs` — sıfır bağımlılık, compile-time safe, `I18n(Lang)` newtype
+- [x] Tüm UI modülleri güncellendi: app, sidebar, query_panel, result_table, explain, tab_manager, dashboard, er_diagram, join_builder, table_dialog, connection_dialog
+- [x] Settings menüsü — Language alt menüsü + About dialog
+- [x] About dialog — logo, sürüm (`env!("CARGO_PKG_VERSION")`), açıklama, repo linki
+- [x] Uygulama başlığı `pgclient` → `ferox` (title bar, taskbar, window chrome)
+- [x] `Cargo.toml` versiyonu 0.1.0 → 0.2.3
+- [x] `CHANGELOG.md` oluşturuldu
+- [x] `v0.2.3` annotated tag oluşturuldu
 
 ### Faz 6 — Multi-statement, Tab UX, RAM Optimizasyonları ✓
 - [x] Sorgu sonuna `;` koyunca hata veriyordu — `simple_query` protokolüne geçildi
@@ -76,4 +87,3 @@
 - [ ] Stored procedure / function browser
 - [ ] Query formatter için klavye kısayolu
 - [ ] Code signing sertifikası (antivirüs false positive çözümü)
-- [ ] i18n planına bak
