@@ -7,6 +7,9 @@ pub struct ConnectionDialog {
     pub should_save: bool,
     pub cancelled: bool,
     pub error: Option<String>,
+    pub test_clicked: bool,
+    pub testing: bool,
+    pub test_result: Option<Result<(), String>>,
     password_buf: String,
     // SSH UI state
     ssh_expanded: bool,
@@ -20,6 +23,9 @@ impl ConnectionDialog {
         self.profile = ConnectionProfile::default();
         self.should_save = false;
         self.error = None;
+        self.test_clicked = false;
+        self.testing = false;
+        self.test_result = None;
         self.password_buf = String::new();
         self.ssh_expanded = false;
         self.ssh_pw_buf = String::new();
@@ -187,14 +193,36 @@ impl ConnectionDialog {
             ui.colored_label(egui::Color32::RED, err);
         }
 
+        // Test connection result
+        match &self.test_result {
+            Some(Ok(())) => {
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80), i18n.test_conn_ok());
+            }
+            Some(Err(msg)) => {
+                let full = format!("{}{}", i18n.test_conn_fail(), msg);
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), full);
+            }
+            None => {}
+        }
+
         ui.horizontal(|ui| {
             if ui.button(i18n.btn_connect()).clicked() {
                 connect = true;
+            }
+            let test_label = if self.testing { i18n.btn_testing() } else { i18n.btn_test_connection() };
+            if ui.add_enabled(!self.testing, egui::Button::new(test_label)).clicked() {
+                self.test_clicked = true;
+                self.test_result = None;
+                self.testing = true;
             }
             if ui.button(i18n.btn_cancel()).clicked() {
                 self.cancelled = true;
             }
         });
+
+        if self.test_clicked {
+            self.profile.password = self.password_buf.clone();
+        }
 
         if connect {
             self.profile.password = self.password_buf.clone();

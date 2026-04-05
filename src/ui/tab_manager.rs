@@ -207,6 +207,29 @@ impl TabManager {
         }
     }
 
+    /// Close all tabs that belong to a given connection.
+    /// Always leaves at least one tab.
+    pub fn close_tabs_for_conn(&mut self, conn_id: usize) {
+        self.tabs.retain(|t| t.conn_id != conn_id);
+        self.running_tabs.remove(&conn_id);
+
+        if self.tabs.is_empty() {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.tabs.push(Tab {
+                id,
+                title: format!("Query {}", self.next_num),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id: 0,
+            });
+            self.next_num += 1;
+        }
+
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+    }
+
     /// Close every tab except `keep_idx`. The kept tab becomes active.
     fn close_others(&mut self, keep_idx: usize) {
         if self.tabs.len() <= 1 {

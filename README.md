@@ -227,7 +227,9 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 - [x] **Join Builder** — visual multi-table JOIN composer
 - [x] **EN/TR localisation** — full bilingual UI, language persists to config
 - [x] **Settings & About** — Settings menu with language switcher and About dialog
-- [ ] **Test Connection** button in connection dialog
+- [x] **Test Connection** — verify credentials before connecting, from the connection dialog
+- [x] **Close connection** — disconnect and remove a connection from the sidebar with one click
+- [x] **Connection status indicators** — color-coded dots replacing broken emoji squares on Windows
 - [ ] **Ctrl+A** select-all in query editor
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch

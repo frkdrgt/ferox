@@ -1,4 +1,5 @@
 use std::sync::mpsc::{self, Receiver, Sender};
+use egui::{Color32, RichText};
 
 use crate::{
     config::AppConfig,
@@ -60,6 +61,8 @@ pub struct PgClientApp {
     pub i18n: I18n,
     pub show_about: bool,
     pub about_texture: Option<egui::TextureHandle>,
+    /// One-shot channel for "Test Connection" — spawned only while testing.
+    test_conn: Option<(Sender<DbCommand>, Receiver<DbEvent>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +124,7 @@ impl PgClientApp {
             i18n,
             show_about: false,
             about_texture,
+            test_conn: None,
         }
     }
 
@@ -308,8 +312,27 @@ impl PgClientApp {
                     DbEvent::TransactionClosed => {
                         self.connections[i].in_transaction = false;
                     }
+                    // TestResult is only sent via the dedicated test_conn channel.
+                    DbEvent::TestResult { .. } => {}
                 }
             }
+        }
+    }
+
+    fn process_test_event(&mut self) {
+        let result = if let Some((_, rx)) = &self.test_conn {
+            rx.try_recv().ok()
+        } else {
+            return;
+        };
+        if let Some(DbEvent::TestResult { success, message }) = result {
+            self.connection_dialog.testing = false;
+            self.connection_dialog.test_result = if success {
+                Some(Ok(()))
+            } else {
+                Some(Err(message))
+            };
+            self.test_conn = None;
         }
     }
 
@@ -337,18 +360,21 @@ impl PgClientApp {
                     for group in &seen_groups {
                         ui.separator();
                         if let Some(g) = group {
-                            let dot = match g.to_lowercase() {
-                                s if s.contains("prod") => "🔴",
-                                s if s.contains("stag") || s.contains("test") => "🟡",
-                                s if s.contains("dev") || s.contains("local") => "🟢",
-                                _ => "🔵",
+                            let dot_color = match g.to_lowercase() {
+                                s if s.contains("prod") => Color32::from_rgb(200, 60, 60),
+                                s if s.contains("stag") || s.contains("test") => Color32::from_rgb(220, 180, 50),
+                                s if s.contains("dev") || s.contains("local") => Color32::from_rgb(80, 200, 80),
+                                _ => Color32::from_rgb(86, 156, 214),
                             };
-                            ui.label(
-                                egui::RichText::new(format!("{dot} {g}"))
-                                    .small()
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(110, 123, 139)),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.colored_label(dot_color, "●");
+                                ui.label(
+                                    egui::RichText::new(g.as_str())
+                                        .small()
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(110, 123, 139)),
+                                );
+                            });
                         }
                         for (i, profile) in profiles.iter().enumerate() {
                             if profile.group.as_deref() == group.as_deref() {
@@ -588,36 +614,59 @@ impl PgClientApp {
 
     fn render_connection_switcher(&mut self, ui: &mut egui::Ui) {
         let i18n = self.i18n;
+
         // Collect display data to avoid borrow issues
-        let data: Vec<(usize, String, bool)> = self
+        let data: Vec<(usize, String, Color32, bool)> = self
             .connections
             .iter()
             .enumerate()
             .map(|(i, c)| {
-                let dot = match &c.status {
-                    ConnectionStatus::Connected { .. } => "🟢",
-                    ConnectionStatus::Connecting => "🟡",
-                    ConnectionStatus::Error(_) => "🔴",
-                    ConnectionStatus::Disconnected => "⚫",
+                let dot_color = match &c.status {
+                    ConnectionStatus::Connected { .. } => Color32::from_rgb(80, 200, 80),
+                    ConnectionStatus::Connecting => Color32::from_rgb(220, 180, 50),
+                    ConnectionStatus::Error(_) => Color32::from_rgb(200, 60, 60),
+                    ConnectionStatus::Disconnected => Color32::from_gray(120),
                 };
-                (i, format!("{} {}", dot, c.name), i == self.active_conn)
+                (i, c.name.clone(), dot_color, i == self.active_conn)
             })
             .collect();
 
         let mut new_active = self.active_conn;
         let mut open_dialog = false;
+        let mut to_close: Option<usize> = None;
 
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for (i, label, is_active) in &data {
-                if ui.selectable_label(*is_active, label.as_str()).clicked() {
-                    new_active = *i;
+        egui::Frame::none()
+            .inner_margin(egui::Margin { left: 4.0, right: 4.0, top: 4.0, bottom: 2.0 })
+            .show(ui, |ui| {
+                for (i, name, dot_color, is_active) in &data {
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        ui.colored_label(*dot_color, "●");
+                        let label = if *is_active {
+                            RichText::new(name.as_str()).strong()
+                        } else {
+                            RichText::new(name.as_str())
+                        };
+                        if ui.selectable_label(*is_active, label).clicked() {
+                            new_active = *i;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("×")
+                                .on_hover_text(i18n.hover_close_conn())
+                                .clicked()
+                            {
+                                to_close = Some(*i);
+                            }
+                        });
+                    });
                 }
-            }
-            if ui.small_button("＋").on_hover_text(i18n.hover_new_connection()).clicked() {
-                open_dialog = true;
-            }
-        });
+                ui.horizontal(|ui| {
+                    ui.add_space(2.0);
+                    if ui.small_button("+").on_hover_text(i18n.hover_new_connection()).clicked() {
+                        open_dialog = true;
+                    }
+                });
+            });
 
         if new_active != self.active_conn {
             self.active_conn = new_active;
@@ -626,12 +675,24 @@ impl PgClientApp {
             self.show_connection_dialog = true;
             self.connection_dialog.reset();
         }
+        if let Some(idx) = to_close {
+            let conn_id = self.connections[idx].id;
+            let _ = self.connections[idx].db_tx.send(DbCommand::Disconnect);
+            self.tab_manager.close_tabs_for_conn(conn_id);
+            self.connections.remove(idx);
+            if self.connections.is_empty() {
+                self.active_conn = 0;
+            } else if self.active_conn >= self.connections.len() {
+                self.active_conn = self.connections.len() - 1;
+            }
+        }
     }
 }
 
 impl eframe::App for PgClientApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_db_events();
+        self.process_test_event();
 
         // Update window title with active connection's status.
         let title = self
@@ -957,8 +1018,26 @@ impl eframe::App for PgClientApp {
                         self.connect_with_profile(profile);
                         self.show_connection_dialog = false;
                     }
+                    if self.connection_dialog.test_clicked {
+                        self.connection_dialog.test_clicked = false;
+                        let profile = self.connection_dialog.profile.clone();
+                        if !profile.host.is_empty() {
+                            let (cmd_tx, cmd_rx) = mpsc::channel::<DbCommand>();
+                            let (evt_tx, evt_rx) = mpsc::channel::<DbEvent>();
+                            DbHandle::spawn(cmd_rx, evt_tx);
+                            let _ = cmd_tx.send(DbCommand::TestConnection(profile));
+                            self.test_conn = Some((cmd_tx, evt_rx));
+                        } else {
+                            self.connection_dialog.testing = false;
+                            self.connection_dialog.test_result = Some(Err(
+                                i18n.err_host_required().to_owned()
+                            ));
+                        }
+                    }
                     if self.connection_dialog.cancelled {
                         self.connection_dialog.cancelled = false;
+                        self.connection_dialog.testing = false;
+                        self.test_conn = None;
                         self.show_connection_dialog = false;
                     }
                 });
@@ -967,11 +1046,11 @@ impl eframe::App for PgClientApp {
             }
         }
 
-        // Request repaint while connecting or query running to show spinner
+        // Request repaint while connecting, testing, or query running
         let any_connecting = self.connections.iter().any(|c| {
             matches!(c.status, ConnectionStatus::Connecting)
         });
-        if any_connecting || self.tab_manager.is_running() {
+        if any_connecting || self.tab_manager.is_running() || self.test_conn.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }

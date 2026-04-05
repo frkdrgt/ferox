@@ -119,7 +119,12 @@ impl I18n {
         self.t("Save connection profile", "Bağlantı profilini kaydet")
     }
     pub fn btn_connect(&self) -> &'static str { self.t("Connect", "Bağlan") }
+    pub fn btn_test_connection(&self) -> &'static str { self.t("Test Connection", "Bağlantıyı Test Et") }
+    pub fn btn_testing(&self) -> &'static str { self.t("Testing…", "Test ediliyor…") }
+    pub fn test_conn_ok(&self) -> &'static str { self.t("Connection successful!", "Bağlantı başarılı!") }
+    pub fn test_conn_fail(&self) -> &'static str { self.t("Connection failed: ", "Bağlantı başarısız: ") }
     pub fn btn_cancel(&self) -> &'static str { self.t("Cancel", "İptal") }
+    pub fn hover_close_conn(&self) -> &'static str { self.t("Disconnect and close", "Bağlantıyı kes ve kapat") }
     pub fn err_host_required(&self) -> &'static str {
         self.t("Host is required", "Sunucu adresi gerekli")
     }
