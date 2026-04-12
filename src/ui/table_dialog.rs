@@ -280,7 +280,7 @@ impl TableDialog {
                             let hc = Color32::from_gray(150);
                             ui.add(egui::Label::new(
                                 RichText::new(i18n.td_col_name()).small().strong().color(hc),
-                            ).wrap(false));
+                            ).truncate());
                             ui.add_sized(
                                 [140.0, 14.0],
                                 egui::Label::new(
@@ -592,7 +592,7 @@ fn render_column_defs(
                         egui::Label::new(
                             RichText::new(i18n.td_col_name()).small().strong().color(hc),
                         )
-                        .wrap(false),
+                        .truncate(),
                     );
                     // Force Type column to match ComboBox minimum width
                     ui.add_sized(

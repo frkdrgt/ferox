@@ -699,7 +699,18 @@ impl PgClientApp {
 }
 
 impl eframe::App for PgClientApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Force dark panel background on macOS light mode — prevents transparent
+        // Frame::none() areas from showing the white system window background.
+        let c = egui::Color32::from_rgb(43, 43, 43); // #2b2b2b
+        [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Re-apply dark theme every frame — macOS system appearance can override
+        // visuals set at startup when the OS is in light mode.
+        configure_style(ctx);
+
         self.process_db_events();
         self.process_test_event();
 

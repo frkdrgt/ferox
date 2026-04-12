@@ -201,7 +201,7 @@ fn show_connections(ui: &mut egui::Ui, conns: &[ConnInfo], i18n: &I18n) -> Optio
                                     .monospace()
                                     .small(),
                             )
-                            .wrap(true),
+                            .wrap(),
                         );
                     });
                     row.col(|ui| {
