@@ -642,12 +642,21 @@ impl PgClientApp {
                     ui.horizontal(|ui| {
                         ui.add_space(2.0);
                         ui.colored_label(*dot_color, "●");
-                        let label = if *is_active {
-                            RichText::new(name.as_str()).strong()
+                        // Truncate long names for display; show full name on hover.
+                        let display_name = if name.len() > 34 {
+                            format!("{}…", &name[..34])
                         } else {
-                            RichText::new(name.as_str())
+                            name.clone()
                         };
-                        if ui.selectable_label(*is_active, label).clicked() {
+                        let label = if *is_active {
+                            RichText::new(display_name).strong()
+                        } else {
+                            RichText::new(display_name)
+                        };
+                        if ui.selectable_label(*is_active, label)
+                            .on_hover_text(name.as_str())
+                            .clicked()
+                        {
                             new_active = *i;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -690,7 +699,18 @@ impl PgClientApp {
 }
 
 impl eframe::App for PgClientApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Force dark panel background on macOS light mode — prevents transparent
+        // Frame::none() areas from showing the white system window background.
+        let c = egui::Color32::from_rgb(43, 43, 43); // #2b2b2b
+        [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Re-apply dark theme every frame — macOS system appearance can override
+        // visuals set at startup when the OS is in light mode.
+        configure_style(ctx);
+
         self.process_db_events();
         self.process_test_event();
 
@@ -943,11 +963,11 @@ impl eframe::App for PgClientApp {
 
         // Central panel — query editor + results (with tab bar)
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Build the list of (conn_id, &db_tx) for tab_manager.show()
-            let conn_refs: Vec<(usize, &Sender<DbCommand>)> = self
+            // Build the list of (conn_id, name, &db_tx) for tab_manager.show()
+            let conn_refs: Vec<(usize, &str, &Sender<DbCommand>)> = self
                 .connections
                 .iter()
-                .map(|c| (c.id, &c.db_tx))
+                .map(|c| (c.id, c.name.as_str(), &c.db_tx))
                 .collect();
             self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n);
         });

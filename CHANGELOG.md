@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.5] — 2026-04-12
+
+### Changed
+- **Tab Manager**: Improved the tab management system for more reliable handling of multiple tabs.
+- **Connection Flow**: Updated the connection screen flow for a smoother user experience.
+- **Infrastructure**: Ignited MacOS testing workflows to ensure cross-platform stability.
+- **Project Structure**: Bumped Rust edition to `2024` in `Cargo.toml`.
+
+---
+
 ## [0.2.3] — 2026-03-29
 
 ### Added

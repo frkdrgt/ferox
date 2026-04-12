@@ -100,6 +100,16 @@ Download the latest release for your platform from the [Releases page](https://g
 | macOS 12+ (Intel + Apple Silicon) | `ferox-macos-universal` |
 | Linux x86\_64 | `ferox-linux-x86_64` |
 
+### macOS — first launch
+
+macOS may block the binary with a "unidentified developer" warning because Ferox is not notarized. To allow it:
+
+```bash
+xattr -rd com.apple.quarantine /path/to/ferox-macos-universal
+```
+
+Then double-click (or `chmod +x` and run from terminal).
+
 ### Build from source
 
 ```bash

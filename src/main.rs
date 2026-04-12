@@ -14,16 +14,6 @@ fn main() -> anyhow::Result<()> {
     // Panic hook + startup log — must be first.
     logger::setup();
 
-    // Single-threaded tokio runtime — the DB worker creates its own
-    // current_thread runtime inside its std::thread, so no worker threads
-    // are needed here. This guard just makes tokio::Handle::current() work
-    // if any library code calls it from the main thread.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    let _guard = rt.enter();
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ferox")
@@ -36,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     let result = eframe::run_native(
         "ferox",
         native_options,
-        Box::new(|cc| Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>),
+        Box::new(|cc| Ok(Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>)),
     );
 
     match &result {
