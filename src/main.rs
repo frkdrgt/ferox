@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     let result = eframe::run_native(
         "ferox",
         native_options,
-        Box::new(|cc| Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>),
+        Box::new(|cc| Ok(Box::new(PgClientApp::new(cc)) as Box<dyn eframe::App>)),
     );
 
     match &result {
