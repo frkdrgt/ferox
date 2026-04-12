@@ -642,12 +642,21 @@ impl PgClientApp {
                     ui.horizontal(|ui| {
                         ui.add_space(2.0);
                         ui.colored_label(*dot_color, "●");
-                        let label = if *is_active {
-                            RichText::new(name.as_str()).strong()
+                        // Truncate long names for display; show full name on hover.
+                        let display_name = if name.len() > 34 {
+                            format!("{}…", &name[..34])
                         } else {
-                            RichText::new(name.as_str())
+                            name.clone()
                         };
-                        if ui.selectable_label(*is_active, label).clicked() {
+                        let label = if *is_active {
+                            RichText::new(display_name).strong()
+                        } else {
+                            RichText::new(display_name)
+                        };
+                        if ui.selectable_label(*is_active, label)
+                            .on_hover_text(name.as_str())
+                            .clicked()
+                        {
                             new_active = *i;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -943,11 +952,11 @@ impl eframe::App for PgClientApp {
 
         // Central panel — query editor + results (with tab bar)
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Build the list of (conn_id, &db_tx) for tab_manager.show()
-            let conn_refs: Vec<(usize, &Sender<DbCommand>)> = self
+            // Build the list of (conn_id, name, &db_tx) for tab_manager.show()
+            let conn_refs: Vec<(usize, &str, &Sender<DbCommand>)> = self
                 .connections
                 .iter()
-                .map(|c| (c.id, &c.db_tx))
+                .map(|c| (c.id, c.name.as_str(), &c.db_tx))
                 .collect();
             self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n);
         });
