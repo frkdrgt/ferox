@@ -463,11 +463,11 @@ impl TabManager {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    /// `conns` is a slice of (conn_id, db_tx) pairs.
+    /// `conns` is a slice of (conn_id, name, db_tx) triples.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        conns: &[(usize, &Sender<DbCommand>)],
+        conns: &[(usize, &str, &Sender<DbCommand>)],
         history: &mut QueryHistory,
         i18n: &I18n,
     ) {
@@ -492,7 +492,7 @@ impl TabManager {
         }
 
         // ── Tab bar ───────────────────────────────────────────────────────────
-        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui, i18n);
+        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui, conns, i18n);
         if let Some(idx) = to_select {
             self.active = idx;
         }
@@ -524,9 +524,8 @@ impl TabManager {
             }
             if let Some(pid) = kill_pid {
                 if let Some(conn_id) = self.dashboard_conn_id() {
-                    if let Some(tx) = conns.iter().find(|(id, _)| *id == conn_id).map(|(_, tx)| *tx) {
+                    if let Some(tx) = conns.iter().find(|(id, _, _)| *id == conn_id).map(|(_, _, tx)| *tx) {
                         let _ = tx.send(crate::db::DbCommand::KillConnection { pid });
-                        // Reload dashboard after a short delay — handled by Empty state
                         self.dashboard.set_loading();
                     }
                 }
@@ -537,30 +536,39 @@ impl TabManager {
                     d.show(ui, i18n);
                 }
             }
-        } else if let Some(tab) = self.tabs.get(active_idx) {
-            let tab_conn_id = tab.conn_id;
-            // Find the db_tx for this tab's conn_id
-            let db_tx_opt = conns.iter().find(|(id, _)| *id == tab_conn_id).map(|(_, tx)| *tx);
+        } else {
+            // Auto-heal: if this tab's conn_id is orphaned but exactly one connection
+            // exists, silently adopt it so the editor stays usable.
+            if active_idx < self.tabs.len() {
+                let current = self.tabs[active_idx].conn_id;
+                if !conns.iter().any(|(id, _, _)| *id == current) && conns.len() == 1 {
+                    self.tabs[active_idx].conn_id = conns[0].0;
+                }
+            }
 
-            if let Some(db_tx) = db_tx_opt {
-                // Detect if the panel starts a query from within its own show()
-                let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
-                if let Some(p) = self.tabs[active_idx].panel_mut() {
-                    p.show(ui, db_tx, history, i18n);
+            if let Some(tab) = self.tabs.get(active_idx) {
+                let tab_conn_id = tab.conn_id;
+                let db_tx_opt = conns.iter().find(|(id, _, _)| *id == tab_conn_id).map(|(_, _, tx)| *tx);
+
+                if let Some(db_tx) = db_tx_opt {
+                    let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                    if let Some(p) = self.tabs[active_idx].panel_mut() {
+                        p.show(ui, db_tx, history, i18n);
+                    }
+                    let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                    if !was_running && is_running_now {
+                        self.running_tabs.insert(tab_conn_id, active_idx);
+                    }
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            egui::RichText::new(i18n.lbl_no_connection_available())
+                                .color(egui::Color32::GRAY)
+                                .italics(),
+                        );
+                    });
                 }
-                let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
-                if !was_running && is_running_now {
-                    self.running_tabs.insert(tab_conn_id, active_idx);
-                }
-            } else {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(
-                        egui::RichText::new(i18n.lbl_no_connection_available())
-                            .color(egui::Color32::GRAY)
-                            .italics(),
-                    );
-                });
             }
         }
     }
@@ -570,6 +578,7 @@ impl TabManager {
     fn render_tab_bar(
         &self,
         ui: &mut egui::Ui,
+        conns: &[(usize, &str, &Sender<DbCommand>)],
         i18n: &I18n,
     ) -> (Option<usize>, Option<usize>, bool, Option<TabContextAction>) {
         let mut to_select: Option<usize> = None;
@@ -580,16 +589,33 @@ impl TabManager {
         let tab_count = self.tabs.len();
 
         // Pre-compute display data (including stable id) to avoid capturing `self` in closures.
-        let tab_data: Vec<(usize, usize, String, bool, bool, bool)> = self
+        // Tuple: (tab_idx, tab_id, title, is_active, is_running, is_dashboard, conn_id)
+        let tab_data: Vec<(usize, usize, String, bool, bool, bool, usize)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
                 let is_running = self.running_tabs.values().any(|&rt| rt == i);
                 let is_dashboard = matches!(t.content, TabContent::Dashboard | TabContent::ErDiagram(_));
-                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard)
+                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard, t.conn_id)
             })
             .collect();
+
+        // Show connection badges when multiple distinct connections have tabs.
+        let unique_conn_count = {
+            let mut seen = std::collections::HashSet::new();
+            for t in &self.tabs { seen.insert(t.conn_id); }
+            seen.len()
+        };
+        let show_badge = unique_conn_count > 1;
+
+        // Short connection name: "db" part of "db@host", truncated to 10 chars.
+        let short_conn = |conn_id: usize| -> String {
+            conns.iter()
+                .find(|(id, _, _)| *id == conn_id)
+                .map(|(_, name, _)| truncate(name.split('@').next().unwrap_or(name), 10))
+                .unwrap_or_default()
+        };
 
         // Borrow the painter before entering child UIs.
         let painter = ui.painter().clone();
@@ -597,9 +623,9 @@ impl TabManager {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
 
-            for (i, tab_id, title, is_active, is_running, is_dashboard) in &tab_data {
+            for (i, tab_id, title, is_active, is_running, is_dashboard, tab_conn_id) in &tab_data {
                 // Truncate long titles.
-                let short: String = truncate(title, 24);
+                let short: String = truncate(title, 20);
                 let display = if *is_running {
                     format!("⏳ {short}")
                 } else {
@@ -639,6 +665,18 @@ impl TabManager {
                         ui.push_id(*tab_id, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
+                            // Connection badge — shown only when multiple connections are open.
+                            if show_badge && !is_dashboard {
+                                let badge = short_conn(*tab_conn_id);
+                                if !badge.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("{badge} ·"))
+                                            .size(10.0)
+                                            .color(Color32::from_gray(100)),
+                                    );
+                                }
+                            }
+
                             // Label handles both left-click (select) and right-click (menu).
                             let tab_i = *i;
                             let label_r = ui.add(
