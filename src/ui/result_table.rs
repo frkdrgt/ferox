@@ -275,7 +275,7 @@ fn render_cell(ui: &mut egui::Ui, cell: &CellValue) {
             ui.label(egui::RichText::new("false").color(egui::Color32::RED));
         }
         other => {
-            ui.add(egui::Label::new(other.to_string()).truncate(true));
+            ui.add(egui::Label::new(other.to_string()).truncate());
         }
     }
 }

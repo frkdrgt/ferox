@@ -1001,7 +1001,7 @@ impl QueryPanel {
                                         egui::Label::new(
                                             egui::RichText::new(main_line).color(color),
                                         )
-                                        .wrap(true),
+                                        .wrap(),
                                     );
                                     if !rest.is_empty() {
                                         ui.add(
@@ -1010,7 +1010,7 @@ impl QueryPanel {
                                                     .small()
                                                     .color(egui::Color32::from_gray(160)),
                                             )
-                                            .wrap(true),
+                                            .wrap(),
                                         );
                                     }
                                 });
