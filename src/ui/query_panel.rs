@@ -151,6 +151,8 @@ pub struct QueryPanel {
     result_filter: String,
     /// Currently selected cell (display_row, col_idx) for Ctrl+C.
     selected_cell: Option<(usize, usize)>,
+    /// Cached sort order for the current result — reused across frames.
+    sorted_indices: Vec<usize>,
     // ── Autocomplete ─────────────────────────────────────────────────────────
     autocomplete: Autocomplete,
     completion_tables: Vec<String>,
@@ -181,6 +183,7 @@ impl Default for QueryPanel {
             cell_popup: None,
             result_filter: String::new(),
             selected_cell: None,
+            sorted_indices: Vec::new(),
             autocomplete: Autocomplete::default(),
             completion_tables: Vec::new(),
             completion_columns: Vec::new(),
@@ -267,7 +270,9 @@ impl QueryPanel {
             self.active_tab = PanelTab::Messages;
         }
 
+        let n = result.rows.len();
         self.result = Some(result);
+        self.sorted_indices = (0..n).collect();
         self.selected_cell = None;
         if self.result.as_ref().map(|r| !r.columns.is_empty()).unwrap_or(false) {
             self.active_tab = PanelTab::Results;
@@ -819,7 +824,10 @@ impl QueryPanel {
                         // ── Build and show table ─────────────────────────────
                         let output = {
                             let result = self.result.as_ref().unwrap();
-                            let mut table = ResultTable::new(result);
+                            let mut table = ResultTable::with_indices(
+                                result,
+                                std::mem::take(&mut self.sorted_indices),
+                            );
                             table.db_sort_mode = self.browse.is_some();
                             table.filter_text = self.result_filter.clone();
                             if let Some(cell) = self.selected_cell {
@@ -854,7 +862,7 @@ impl QueryPanel {
                                 self.edit_needs_focus = false;
                             }
 
-                            (out, table.sorted_indices.clone())
+                            (out, table.sorted_indices)
                         }; // borrow of self.result released here
 
                         let (output, sorted_indices) = output;
@@ -917,6 +925,9 @@ impl QueryPanel {
                             self.edit_state = None;
                             self.edit_needs_focus = false;
                         }
+
+                        // Save sorted indices back for next frame (avoids per-frame reallocation).
+                        self.sorted_indices = sorted_indices;
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();

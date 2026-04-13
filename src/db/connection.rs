@@ -633,7 +633,7 @@ fn export_json(result: &QueryResult, path: &str) -> Result<()> {
             for (col, cell) in result.columns.iter().zip(row.iter()) {
                 let v = match cell {
                     crate::db::query::CellValue::Null => Value::Null,
-                    crate::db::query::CellValue::Text(s) => Value::String(s.clone()),
+                    crate::db::query::CellValue::Text(s) => Value::String(s.to_string()),
                     crate::db::query::CellValue::Integer(i) => json!(i),
                     crate::db::query::CellValue::Float(f) => json!(f),
                     crate::db::query::CellValue::Boolean(b) => Value::Bool(*b),

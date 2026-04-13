@@ -45,8 +45,8 @@ pub struct ResultTable<'a> {
 }
 
 impl<'a> ResultTable<'a> {
-    pub fn new(result: &'a QueryResult) -> Self {
-        let sorted_indices = (0..result.rows.len()).collect();
+    /// Create with externally managed sorted_indices (avoids per-frame allocation).
+    pub fn with_indices(result: &'a QueryResult, sorted_indices: Vec<usize>) -> Self {
         Self {
             result,
             selected_row: None,
@@ -116,7 +116,7 @@ impl<'a> ResultTable<'a> {
                 })
                 .collect()
         } else {
-            sorted_indices.clone()
+            sorted_indices  // move: filter empty, no extra allocation
         };
 
         let mut sort_changed: Option<(usize, bool)> = None;
