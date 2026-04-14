@@ -10,6 +10,7 @@ use crate::i18n::{I18n, Lang};
 use crate::ui::dashboard::Dashboard;
 use crate::ui::er_diagram::ErDiagram;
 use crate::ui::query_panel::QueryPanel;
+use crate::ui::schema_diff::{SchemaDiff, SchemaRows};
 
 // ── Tab content ───────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ enum TabContent {
     Query(QueryPanel),
     Dashboard,
     ErDiagram(ErDiagram),
+    SchemaDiff(SchemaDiff),
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
@@ -40,6 +42,14 @@ impl Tab {
     fn panel_mut(&mut self) -> Option<&mut QueryPanel> {
         match &mut self.content {
             TabContent::Query(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn schema_diff_mut(&mut self) -> Option<&mut SchemaDiff> {
+        match &mut self.content {
+            TabContent::SchemaDiff(d) => Some(d),
             _ => None,
         }
     }
@@ -151,6 +161,32 @@ impl TabManager {
             conn_id,
         });
         self.active = self.tabs.len() - 1;
+    }
+
+    /// Open a new Schema Diff tab.
+    pub fn open_schema_diff(&mut self, conn_id_a: usize, conn_id_b: usize) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            id,
+            title: "⊕ Schema Diff".to_owned(),
+            content: TabContent::SchemaDiff(SchemaDiff::new(conn_id_a, conn_id_b)),
+            conn_id: conn_id_a,
+        });
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Route a schema snapshot to the SchemaDiff tab that requested it.
+    pub fn deliver_schema_snapshot(&mut self, request_id: u64, rows: SchemaRows) {
+        // Find the tab that owns this request_id, then deliver.
+        let idx = self.tabs.iter().position(|t| {
+            matches!(&t.content, TabContent::SchemaDiff(d) if d.has_request(request_id))
+        });
+        if let Some(i) = idx {
+            if let TabContent::SchemaDiff(d) = &mut self.tabs[i].content {
+                d.deliver(request_id, rows);
+            }
+        }
     }
 
     /// Returns (conn_id, schema) if the active tab is an ER diagram that needs loading.
@@ -547,6 +583,7 @@ impl TabManager {
         let tab_kind = self.tabs.get(active_idx).map(|t| match &t.content {
             TabContent::Dashboard => 0u8,
             TabContent::ErDiagram(_) => 1u8,
+            TabContent::SchemaDiff(_) => 3u8,
             TabContent::Query(_) => 2u8,
         });
 
@@ -567,6 +604,12 @@ impl TabManager {
             if let Some(tab) = self.tabs.get_mut(active_idx) {
                 if let TabContent::ErDiagram(d) = &mut tab.content {
                     d.show(ui, i18n);
+                }
+            }
+        } else if tab_kind == Some(3) {
+            if let Some(tab) = self.tabs.get_mut(active_idx) {
+                if let TabContent::SchemaDiff(d) = &mut tab.content {
+                    d.show(ui, conns, i18n);
                 }
             }
         } else {

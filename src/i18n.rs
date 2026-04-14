@@ -39,6 +39,7 @@ impl I18n {
     pub fn menu_safe_mode_on(&self) -> &'static str { self.t("🛡 Safe Mode  ✓", "🛡 Güvenli Mod  ✓") }
     pub fn menu_join_builder(&self) -> &'static str { self.t("Join Builder…", "Join Oluşturucu…") }
     pub fn menu_dashboard(&self) -> &'static str { self.t("📊 Dashboard", "📊 Gösterge Paneli") }
+    pub fn menu_schema_diff(&self) -> &'static str { self.t("⊕ Schema Diff", "⊕ Şema Karşılaştırma") }
     pub fn menu_execute(&self) -> &'static str { self.t("Execute (F5 / Ctrl+Enter)", "Çalıştır (F5 / Ctrl+Enter)") }
     pub fn menu_cancel(&self) -> &'static str { self.t("Cancel (Ctrl+C)", "İptal (Ctrl+C)") }
     pub fn menu_export_csv(&self) -> &'static str { self.t("Export as CSV…", "CSV olarak Dışa Aktar…") }
@@ -297,6 +298,9 @@ impl I18n {
     pub fn kind_views(&self) -> &'static str { self.t("VIEWS", "GÖRÜNÜMLER") }
     pub fn kind_mat_views(&self) -> &'static str { self.t("MAT VIEWS", "MAT GÖRÜNÜMLER") }
     pub fn kind_foreign_tables(&self) -> &'static str { self.t("FOREIGN TABLES", "YABANCI TABLOLAR") }
+    pub fn kind_functions(&self) -> &'static str { self.t("FUNCTIONS", "FONKSİYONLAR") }
+    pub fn fn_show_definition(&self) -> &'static str { self.t("Show Definition", "Tanımı Göster") }
+    pub fn fn_copy_call(&self) -> &'static str { self.t("Copy Call", "Çağrıyı Kopyala") }
     pub fn schema_menu_new_table(&self) -> &'static str { self.t("＋  New Table…", "＋  Yeni Tablo…") }
     pub fn schema_menu_er(&self) -> &'static str { self.t("📐  View ER Diagram", "📐  ER Diyagramını Gör") }
     pub fn schema_menu_refresh(&self) -> &'static str { self.t("↺  Refresh", "↺  Yenile") }

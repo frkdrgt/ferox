@@ -6,6 +6,7 @@ pub mod explain;
 pub mod join_builder;
 pub mod query_panel;
 pub mod result_table;
+pub mod schema_diff;
 pub mod sidebar;
 pub mod syntax;
 pub mod tab_manager;

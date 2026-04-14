@@ -217,6 +217,114 @@ pub async fn load_foreign_keys(
         .collect())
 }
 
+// ── Functions / procedures ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FunctionKind {
+    Function,
+    Procedure,
+    Aggregate,
+    Window,
+}
+
+impl FunctionKind {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            FunctionKind::Function  => "ƒ",
+            FunctionKind::Procedure => "⚙",
+            FunctionKind::Aggregate => "∑",
+            FunctionKind::Window    => "⊞",
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            FunctionKind::Function  => "FUNCTION",
+            FunctionKind::Procedure => "PROCEDURE",
+            FunctionKind::Aggregate => "AGGREGATE",
+            FunctionKind::Window    => "WINDOW",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionInfo {
+    pub name: String,
+    /// Identity arguments, e.g. "amount numeric, rate numeric"
+    pub args: String,
+    pub return_type: String,
+    pub kind: FunctionKind,
+}
+
+/// Load all routines in `schema`. Uses `prokind` (PG ≥ 11); on older versions
+/// the query will fail and an empty list is returned silently.
+pub async fn load_functions(client: &Client, schema: &str) -> Result<Vec<FunctionInfo>> {
+    let rows = client
+        .query(
+            "SELECT p.proname,
+                    pg_get_function_identity_arguments(p.oid),
+                    COALESCE(pg_get_function_result(p.oid), 'void'),
+                    CASE p.prokind
+                        WHEN 'p' THEN 'p'
+                        WHEN 'a' THEN 'a'
+                        WHEN 'w' THEN 'w'
+                        ELSE 'f'
+                    END
+             FROM pg_proc p
+             JOIN pg_namespace n ON p.pronamespace = n.oid
+             WHERE n.nspname = $1
+             ORDER BY p.proname, 2",
+            &[&schema],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let kind_ch: &str = r.get(3);
+            FunctionInfo {
+                name: r.get(0),
+                args: r.get(1),
+                return_type: r.get(2),
+                kind: match kind_ch {
+                    "p" => FunctionKind::Procedure,
+                    "a" => FunctionKind::Aggregate,
+                    "w" => FunctionKind::Window,
+                    _   => FunctionKind::Function,
+                },
+            }
+        })
+        .collect())
+}
+
+// ── Schema snapshot (for diff) ────────────────────────────────────────────────
+
+/// Load (table_name, column_name, udt_name) for all tables in a schema.
+/// Used client-side to compute schema diffs without extra DB round-trips.
+pub async fn load_schema_snapshot(
+    client: &Client,
+    schema: &str,
+) -> Vec<(String, String, String)> {
+    let escaped = schema.replace('\'', "''");
+    let sql = format!(
+        "SELECT table_name, column_name, udt_name \
+         FROM information_schema.columns \
+         WHERE table_schema = '{escaped}' \
+         ORDER BY table_name, ordinal_position"
+    );
+    let mut rows = Vec::new();
+    if let Ok(msgs) = client.simple_query(&sql).await {
+        for msg in msgs {
+            if let tokio_postgres::SimpleQueryMessage::Row(r) = msg {
+                let tbl   = r.get(0).unwrap_or("").to_owned();
+                let col   = r.get(1).unwrap_or("").to_owned();
+                let dtype = r.get(2).unwrap_or("").to_owned();
+                rows.push((tbl, col, dtype));
+            }
+        }
+    }
+    rows
+}
+
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

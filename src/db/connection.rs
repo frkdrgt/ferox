@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
-use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
+use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
 /// Commands sent from the UI thread → DB worker.
@@ -37,6 +37,10 @@ pub enum DbCommand {
     TestConnection(ConnectionProfile),
     /// Execute multiple SQL statements individually; each gets its own QueryResult.
     ExecuteMulti(Vec<String>),
+    /// Load functions/procedures for a schema.
+    LoadFunctions { schema: String },
+    /// Load (table, column, udt_name) snapshot for schema diff.
+    LoadSchemaSnapshot { schema: String, request_id: u64 },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -72,6 +76,10 @@ pub enum DbEvent {
     TestResult { success: bool, message: String },
     /// Results for each statement in an ExecuteMulti command (one per statement).
     MultiQueryResults(Vec<QueryResult>),
+    /// Functions/procedures loaded for a schema.
+    Functions { schema: String, functions: Vec<FunctionInfo> },
+    /// Schema snapshot rows for diff (table, column, udt_name).
+    SchemaSnapshot { request_id: u64, rows: Vec<(String, String, String)> },
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -160,6 +168,18 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                                 let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                             }
                         }
+                    }
+                }
+            }
+
+            DbCommand::LoadFunctions { schema } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        // Silently return empty on older PG versions that don't have prokind.
+                        let functions = metadata::load_functions(c, &schema)
+                            .await
+                            .unwrap_or_default();
+                        let _ = evt_tx.send(DbEvent::Functions { schema, functions });
                     }
                 }
             }
@@ -395,6 +415,15 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                 }
             }
 
+
+            DbCommand::LoadSchemaSnapshot { schema, request_id } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let rows = metadata::load_schema_snapshot(c, &schema).await;
+                        let _ = evt_tx.send(DbEvent::SchemaSnapshot { request_id, rows });
+                    }
+                }
+            }
 
             DbCommand::LoadErDiagram { schema } => {
                 if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {

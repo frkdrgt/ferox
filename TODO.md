@@ -5,6 +5,8 @@
 ### Tamamlandı
 - [x] **Multi-statement tabs** — birden fazla SELECT varsa her biri ayrı tab'da açılıyor (`ExecuteMulti` + `set_multi_results_for`)
 - [x] **Sütun istatistikleri** — column header sağ-tık → null %, distinct, min/max len, top-10 değer (client-side, DB roundtrip yok)
+- [x] **Fonksiyon/prosedür browser** — sidebar schema tree altında FUNCTIONS bölümü; lazy-load, ikon, arg signature, return type, sağ-tık menüsü
+- [x] **Schema Diff** — Query → Schema Diff menüsü; iki bağlantı/şema karşılaştırması; +added ~changed -removed tablolar + per-column diff; `information_schema.columns` üzerinden client-side hesaplama
 
 ### Küçük Eksikler
 - [ ] Bağlantı dialog'unda "Test Connection" butonu

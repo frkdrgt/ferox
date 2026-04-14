@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Sense, Vec2};
 
-use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo, TableKind};
+use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, FunctionInfo, FunctionKind, IndexInfo, SchemaInfo, TableInfo, TableKind};
 use crate::i18n::I18n;
 
 /// Script kinds for the Generate Script menu.
@@ -19,6 +19,7 @@ pub enum ScriptKind {
 #[derive(Debug)]
 pub enum SidebarAction {
     LoadTables(String),
+    LoadFunctions(String),
     LoadDetails { schema: String, table: String },
     BrowseTable { schema: String, table: String },
     /// Paste SQL into the active editor without executing.
@@ -209,6 +210,10 @@ pub struct Sidebar {
     table_details: HashMap<(String, String), TableDetailCache>,
     filter: String,
     selected: Option<(String, String)>,
+    /// Functions/procedures per schema (lazy-loaded alongside tables).
+    functions: HashMap<String, Vec<FunctionInfo>>,
+    /// Whether the FUNCTIONS section is expanded per schema.
+    expanded_functions: HashMap<String, bool>,
 }
 
 impl Sidebar {
@@ -219,7 +224,13 @@ impl Sidebar {
         self.expanded.clear();
         self.expanded_tables.clear();
         self.table_details.clear();
+        self.functions.clear();
+        self.expanded_functions.clear();
         self.selected = None;
+    }
+
+    pub fn set_functions(&mut self, schema: &str, functions: Vec<FunctionInfo>) {
+        self.functions.insert(schema.to_owned(), functions);
     }
 
     pub fn set_schemas(&mut self, schemas: Vec<SchemaInfo>) {
@@ -308,7 +319,9 @@ impl Sidebar {
             for schema_name in to_reload {
                 self.tables.remove(&schema_name);
                 self.tables_loaded_at.remove(&schema_name);
-                actions.push(SidebarAction::LoadTables(schema_name));
+                self.functions.remove(&schema_name);
+                actions.push(SidebarAction::LoadTables(schema_name.clone()));
+                actions.push(SidebarAction::LoadFunctions(schema_name));
             }
         }
 
@@ -430,8 +443,13 @@ impl Sidebar {
                             .entry(schema.name.clone())
                             .or_insert(false);
                         *entry = !*entry;
-                        if *entry && !self.tables.contains_key(&schema.name) {
-                            actions.push(SidebarAction::LoadTables(schema.name.clone()));
+                        if *entry {
+                            if !self.tables.contains_key(&schema.name) {
+                                actions.push(SidebarAction::LoadTables(schema.name.clone()));
+                            }
+                            if !self.functions.contains_key(&schema.name) {
+                                actions.push(SidebarAction::LoadFunctions(schema.name.clone()));
+                            }
                         }
                     }
 
@@ -454,14 +472,27 @@ impl Sidebar {
                             ui.close_menu();
                         }
                         if ui.button(i18n.schema_menu_refresh()).clicked() {
-                            actions.push(SidebarAction::LoadTables(
-                                schema_name_for_menu.clone(),
-                            ));
+                            self.functions.remove(&schema_name_for_menu);
+                            actions.push(SidebarAction::LoadTables(schema_name_for_menu.clone()));
+                            actions.push(SidebarAction::LoadFunctions(schema_name_for_menu.clone()));
                             ui.close_menu();
                         }
                     });
 
-                    if !is_expanded || visible.is_empty() {
+                    let visible_funcs: Vec<&FunctionInfo> = self
+                        .functions
+                        .get(&schema.name)
+                        .map(|fns| {
+                            fns.iter()
+                                .filter(|f| {
+                                    filter.is_empty()
+                                        || f.name.to_lowercase().contains(&filter)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if !is_expanded || (visible.is_empty() && visible_funcs.is_empty()) {
                         continue;
                     }
 
@@ -665,6 +696,84 @@ impl Sidebar {
                                 if is_table_expanded {
                                     ui.indent(egui::Id::new(&key), |ui| {
                                         render_table_details(ui, &details);
+                                    });
+                                }
+                            }
+                        }
+
+                        // ── FUNCTIONS section ──────────────────────────────
+                        if !visible_funcs.is_empty() {
+                            let fn_exp_key = format!("__fn__{}", schema.name);
+                            let fn_expanded = *self
+                                .expanded_functions
+                                .get(&schema.name)
+                                .unwrap_or(&false);
+
+                            ui.add_space(4.0);
+                            let hdr_resp = render_kind_header_clickable(
+                                ui,
+                                i18n.kind_functions(),
+                                visible_funcs.len(),
+                                fn_expanded,
+                            );
+                            if hdr_resp.clicked() {
+                                let e = self
+                                    .expanded_functions
+                                    .entry(schema.name.clone())
+                                    .or_insert(false);
+                                *e = !*e;
+                            }
+
+                            if fn_expanded {
+                                let schema_name = schema.name.clone();
+                                for func in &visible_funcs {
+                                    let resp = render_function_row(
+                                        ui,
+                                        func,
+                                        egui::Id::new((&fn_exp_key, &func.name, &func.args)),
+                                    );
+                                    let func_name = func.name.clone();
+                                    let func_args = func.args.clone();
+                                    let func_ret  = func.return_type.clone();
+                                    let func_kind = func.kind.clone();
+                                    let sn = schema_name.clone();
+                                    resp.context_menu(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("{sn}.{func_name}"))
+                                                .strong()
+                                                .small(),
+                                        );
+                                        ui.separator();
+                                        if ui.button(i18n.fn_show_definition()).clicked() {
+                                            // Paste a query that retrieves the source.
+                                            let sql = if func_kind == FunctionKind::Aggregate {
+                                                format!(
+                                                    "-- Aggregate functions do not have a pg_get_functiondef\n\
+                                                     SELECT p.proname, p.prokind\n\
+                                                     FROM pg_proc p\n\
+                                                     JOIN pg_namespace n ON p.pronamespace = n.oid\n\
+                                                     WHERE n.nspname = '{sn}' AND p.proname = '{func_name}';"
+                                                )
+                                            } else {
+                                                format!(
+                                                    "SELECT pg_get_functiondef('{sn}.{func_name}({func_args})'::regprocedure);"
+                                                )
+                                            };
+                                            actions.push(SidebarAction::SetSql(sql));
+                                            ui.close_menu();
+                                        }
+                                        if func_kind != FunctionKind::Aggregate
+                                            && func_kind != FunctionKind::Window
+                                        {
+                                            if ui.button(i18n.fn_copy_call()).clicked() {
+                                                let call = build_call_template(
+                                                    &sn, &func_name, &func_args,
+                                                    &func_ret, &func_kind,
+                                                );
+                                                actions.push(SidebarAction::SetSql(call));
+                                                ui.close_menu();
+                                            }
+                                        }
                                     });
                                 }
                             }
@@ -873,5 +982,175 @@ fn render_table_details(ui: &mut egui::Ui, details: &Option<TableDetailCache>) {
 
     if d.columns.is_empty() && d.indexes.is_empty() && d.foreign_keys.is_empty() {
         ui.label(RichText::new("(empty)").small().color(Color32::from_gray(70)));
+    }
+}
+
+/// Like `render_kind_header` but clickable (toggles expand) and shows an arrow.
+fn render_kind_header_clickable(
+    ui: &mut egui::Ui,
+    label: &str,
+    count: usize,
+    expanded: bool,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 18.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+
+        let bg = if resp.hovered() {
+            Color32::from_rgb(55, 59, 63)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 2.0, bg);
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        painter.text(
+            rect.left_center() + Vec2::new(4.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            arrow,
+            egui::FontId::proportional(9.0),
+            Color32::from_rgb(110, 123, 139),
+        );
+        painter.text(
+            rect.left_center() + Vec2::new(14.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label.to_uppercase(),
+            egui::FontId::proportional(9.5),
+            Color32::from_rgb(110, 123, 139),
+        );
+
+        let badge_str = format!("{count}");
+        let badge_font = egui::FontId::proportional(9.5);
+        let badge_galley = painter.layout_no_wrap(
+            badge_str.clone(),
+            badge_font.clone(),
+            Color32::from_rgb(110, 123, 139),
+        );
+        let badge_w = badge_galley.rect.width() + 8.0;
+        let badge_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - badge_w / 2.0 - 4.0, rect.center().y),
+            egui::vec2(badge_w, 13.0),
+        );
+        painter.rect_filled(badge_rect, egui::Rounding::same(6.0), Color32::from_rgb(76, 80, 82));
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &badge_str,
+            badge_font,
+            Color32::from_rgb(169, 183, 198),
+        );
+    }
+    resp
+}
+
+const COLOR_FUNC: Color32 = Color32::from_rgb(78, 201, 176); // teal — distinct from tables
+
+fn render_function_row(
+    ui: &mut egui::Ui,
+    func: &FunctionInfo,
+    id: egui::Id,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 20.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let bg = if resp.hovered() {
+            Color32::from_rgb(55, 59, 63)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 0.0, bg);
+
+        // Icon
+        painter.text(
+            rect.left_center() + Vec2::new(6.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            func.kind.icon(),
+            egui::FontId::proportional(11.0),
+            COLOR_FUNC,
+        );
+
+        // name(args) → return_type  (truncated)
+        let sig = if func.args.is_empty() {
+            format!("{}()", func.name)
+        } else {
+            format!("{}(…)", func.name)
+        };
+        painter.text(
+            rect.left_center() + Vec2::new(20.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &sig,
+            egui::FontId::monospace(11.0),
+            Color32::from_rgb(169, 183, 198),
+        );
+
+        // Return type badge on the right
+        if !func.return_type.is_empty() && func.return_type != "void" {
+            let ret_short: String = func.return_type.chars().take(16).collect();
+            painter.text(
+                rect.right_center() + Vec2::new(-6.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                &ret_short,
+                egui::FontId::monospace(9.5),
+                Color32::from_gray(90),
+            );
+        }
+    }
+
+    // Hover tooltip: full signature
+    resp.on_hover_ui(|ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(COLOR_FUNC, func.kind.icon());
+            ui.label(
+                RichText::new(func.kind.label())
+                    .small()
+                    .color(Color32::from_gray(160)),
+            );
+        });
+        ui.add(egui::Label::new(
+            RichText::new(format!("{}({})", func.name, func.args)).monospace().small(),
+        ));
+        if !func.return_type.is_empty() {
+            ui.label(
+                RichText::new(format!("→ {}", func.return_type))
+                    .small()
+                    .color(Color32::from_gray(140)),
+            );
+        }
+    })
+}
+
+/// Generate a call template for the editor (SET SQL).
+fn build_call_template(
+    schema: &str,
+    name: &str,
+    args: &str,
+    return_type: &str,
+    kind: &FunctionKind,
+) -> String {
+    // Build placeholder args: each param "name type" → just the name or a placeholder.
+    let arg_placeholders: String = args
+        .split(',')
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .map(|a| {
+            // "param_name type" → keep param_name, else use placeholder
+            let parts: Vec<&str> = a.splitn(2, ' ').collect();
+            if parts.len() == 2 { format!("NULL /* {} */", a) } else { "NULL".to_owned() }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    match kind {
+        FunctionKind::Procedure => {
+            format!("CALL \"{schema}\".\"{name}\"({arg_placeholders});")
+        }
+        _ => {
+            let _ = return_type;
+            format!("SELECT \"{schema}\".\"{name}\"({arg_placeholders});")
+        }
     }
 }

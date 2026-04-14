@@ -5,6 +5,8 @@
 ### Added
 - **Multi-statement tabs** — when multiple `;`-separated SELECT statements are run, each result opens in its own tab instead of only showing the last one
 - **Column Statistics panel** — right-click any column header in the result table → 📊 Statistics popup shows total rows, null count/%, distinct value count, min/max text length, and top-10 most frequent values (computed from fetched rows, no extra DB round-trip)
+- **Stored procedure / function browser** — FUNCTIONS section in the sidebar schema tree shows all functions, procedures, aggregates, and window functions with icons, arg signatures, and return type; right-click → Show Definition / Copy Call; lazy-loaded (only on schema expand), cached, refreshable with F5
+- **Schema Diff** (Query → Schema Diff) — compare two schemas side-by-side across any two open connections; shows `+` added tables, `-` removed tables, `~` changed tables with per-column diffs (added/removed/type-changed); computed client-side from `information_schema.columns` with no extra DB overhead
 
 ---
 
