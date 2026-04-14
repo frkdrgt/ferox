@@ -56,13 +56,15 @@
 - **Persistent query history** — last 500 queries, searchable, click to reload
 
 ### Query Tools
-- **Multi-statement execution** — paste multiple SQL statements separated by `;`, all run in sequence
+- **Multi-statement execution** — `;`-separated statements run in sequence; each SELECT result opens in its own tab
 - **View DDL** — right-click any view or materialized view → Show DDL
 - **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node; optimization suggestions
 - **Safe mode transactions** — DML wrapped in explicit BEGIN/COMMIT/ROLLBACK
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
 - **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
 - **Join Builder** — visual multi-table JOIN composer (`Query → Join Builder…`)
+
+- **Column statistics** — right-click any column header → null %, distinct count, min/max length, top values
 
 ### Developer Experience
 - **SQL syntax highlighting** — zero-dependency tokenizer, dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes

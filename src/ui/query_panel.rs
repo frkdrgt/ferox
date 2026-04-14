@@ -12,6 +12,54 @@ use crate::ui::syntax::highlight_sql;
 const PAGE_SIZE: usize = 100;
 const MAX_LOG: usize = 200;
 
+// ── SQL statement splitter ────────────────────────────────────────────────────
+
+/// Split SQL at `;` boundaries, correctly skipping `;` inside single-quoted
+/// strings and `--` line comments. Returns non-empty, trimmed statements.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut stmts = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_line_comment = false;
+    let mut chars = sql.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            current.push(ch);
+            if ch == '\n' { in_line_comment = false; }
+            continue;
+        }
+        if in_single_quote {
+            current.push(ch);
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    current.push(chars.next().unwrap()); // escaped ''
+                } else {
+                    in_single_quote = false;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' => { in_single_quote = true; current.push(ch); }
+            '-' if chars.peek() == Some(&'-') => {
+                in_line_comment = true;
+                current.push(ch);
+                current.push(chars.next().unwrap());
+            }
+            ';' => {
+                let t = current.trim().to_owned();
+                if !t.is_empty() { stmts.push(t); }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let t = current.trim().to_owned();
+    if !t.is_empty() { stmts.push(t); }
+    stmts
+}
+
 // ── UTF-8 index helpers ────────────────────────────────────────────────────────
 
 /// Convert a char index (egui `CCursor::index`) to a byte offset in `text`.
@@ -63,6 +111,58 @@ struct CellPopup {
     col_idx: usize,
     /// Actual row index in QueryResult (after sort mapping).
     actual_row: usize,
+}
+
+// ── Column statistics ─────────────────────────────────────────────────────────
+
+struct ColumnStats {
+    col_name: String,
+    total: usize,
+    null_count: usize,
+    distinct: usize,
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+    top_values: Vec<(String, usize)>,
+}
+
+impl ColumnStats {
+    fn compute(result: &crate::db::query::QueryResult, col_idx: usize) -> Self {
+        use std::collections::HashMap;
+        let col_name = result.columns[col_idx].clone();
+        let total = result.rows.len();
+        let mut null_count = 0usize;
+        let mut freq: HashMap<String, usize> = HashMap::new();
+        let mut min_len = usize::MAX;
+        let mut max_len = 0usize;
+
+        for row in &result.rows {
+            let cell = &row[col_idx];
+            if matches!(cell, CellValue::Null) {
+                null_count += 1;
+            } else {
+                let s = cell.to_string();
+                let len = s.chars().count();
+                if len < min_len { min_len = len; }
+                if len > max_len { max_len = len; }
+                *freq.entry(s).or_insert(0) += 1;
+            }
+        }
+
+        let distinct = freq.len();
+        let mut top_values: Vec<(String, usize)> = freq.into_iter().collect();
+        top_values.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        top_values.truncate(10);
+
+        ColumnStats {
+            col_name,
+            total,
+            null_count,
+            distinct,
+            min_len: if min_len == usize::MAX { None } else { Some(min_len) },
+            max_len: if null_count == total { None } else { Some(max_len) },
+            top_values,
+        }
+    }
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -159,6 +259,8 @@ pub struct QueryPanel {
     completion_columns: Vec<String>,
     /// Current UI language — used for log messages generated outside show().
     pub lang: Lang,
+    /// Column statistics popup state.
+    col_stats: Option<ColumnStats>,
 }
 
 impl Default for QueryPanel {
@@ -188,6 +290,7 @@ impl Default for QueryPanel {
             completion_tables: Vec::new(),
             completion_columns: Vec::new(),
             lang: Lang::En,
+            col_stats: None,
         }
     }
 }
@@ -330,6 +433,17 @@ impl QueryPanel {
         }
     }
 
+    /// Send current SQL: multiple statements → ExecuteMulti, single → Execute.
+    fn send_execute(&self, db_tx: &Sender<DbCommand>) {
+        let stmts = split_sql_statements(&self.sql);
+        if stmts.len() > 1 {
+            let _ = db_tx.send(DbCommand::ExecuteMulti(stmts));
+        } else {
+            let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+        }
+    }
+
+
     pub fn trigger_export_csv(&mut self, db_tx: &Sender<DbCommand>) {
         let sql = self.export_sql();
         if let Some(path) = pick_save_path("csv") {
@@ -424,7 +538,7 @@ impl QueryPanel {
                         history.push(self.sql.clone());
                         let _ = history.save();
                         self.set_running();
-                        let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+                        self.send_execute(db_tx);
                     }
 
                     let cancel_fill = if self.running { col_red } else { col_dim };
@@ -661,7 +775,7 @@ impl QueryPanel {
                     history.push(self.sql.clone());
                     let _ = history.save();
                     self.set_running();
-                    let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+                    self.send_execute(db_tx);
                 }
             });
 
@@ -926,6 +1040,15 @@ impl QueryPanel {
                             self.edit_needs_focus = false;
                         }
 
+                        // ── Handle column stats request ───────────────────────
+                        if let Some(col_idx) = output.col_stats_requested {
+                            if let Some(result) = &self.result {
+                                if col_idx < result.columns.len() {
+                                    self.col_stats = Some(ColumnStats::compute(result, col_idx));
+                                }
+                            }
+                        }
+
                         // Save sorted indices back for next frame (avoids per-frame reallocation).
                         self.sorted_indices = sorted_indices;
                     } else if self.running {
@@ -1112,9 +1235,10 @@ impl QueryPanel {
             });
         }
 
-        // Floating popup — rendered last so it draws on top of everything.
+        // Floating popups — rendered last so they draw on top of everything.
         let ctx = ui.ctx().clone();
         self.show_cell_popup(&ctx, i18n);
+        self.show_col_stats_popup(&ctx, i18n);
     }
 
     // ── Cell value popup ─────────────────────────────────────────────────────
@@ -1211,6 +1335,86 @@ impl QueryPanel {
             self.edit_needs_focus = true;
         } else if open && !close_clicked {
             self.cell_popup = Some(popup);
+        }
+    }
+
+    // ── Column stats popup ────────────────────────────────────────────────────
+
+    fn show_col_stats_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
+        let Some(stats) = self.col_stats.take() else { return };
+        let mut open = true;
+
+        egui::Window::new(i18n.col_stats_title(&stats.col_name))
+            .collapsible(false)
+            .resizable(false)
+            .min_width(260.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let null_pct = if stats.total > 0 {
+                    stats.null_count as f64 / stats.total as f64 * 100.0
+                } else {
+                    0.0
+                };
+
+                egui::Grid::new("col_stats_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(i18n.col_stats_total()).strong());
+                        ui.label(format!("{}", stats.total));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new(i18n.col_stats_null()).strong());
+                        ui.label(format!("{} ({:.1}%)", stats.null_count, null_pct));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new(i18n.col_stats_distinct()).strong());
+                        ui.label(format!("{}", stats.distinct));
+                        ui.end_row();
+
+                        if let Some(min) = stats.min_len {
+                            ui.label(egui::RichText::new(i18n.col_stats_min_len()).strong());
+                            ui.label(format!("{min}"));
+                            ui.end_row();
+                        }
+                        if let Some(max) = stats.max_len {
+                            ui.label(egui::RichText::new(i18n.col_stats_max_len()).strong());
+                            ui.label(format!("{max}"));
+                            ui.end_row();
+                        }
+                    });
+
+                if !stats.top_values.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(i18n.col_stats_top_values()).strong());
+                    ui.add_space(2.0);
+                    for (val, count) in &stats.top_values {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("×{count}"))
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(100, 180, 100)),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(val).monospace()
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                }
+
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(i18n.col_stats_source_note())
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+            });
+
+        if open {
+            self.col_stats = Some(stats);
         }
     }
 

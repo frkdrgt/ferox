@@ -35,6 +35,8 @@ pub enum DbCommand {
     KillConnection { pid: String },
     /// Test a connection profile without storing the client.
     TestConnection(ConnectionProfile),
+    /// Execute multiple SQL statements individually; each gets its own QueryResult.
+    ExecuteMulti(Vec<String>),
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -68,6 +70,8 @@ pub enum DbEvent {
     ErDiagramData { schema: String, tables: Vec<ErTableInfo> },
     /// Result of a TestConnection command.
     TestResult { success: bool, message: String },
+    /// Results for each statement in an ExecuteMulti command (one per statement).
+    MultiQueryResults(Vec<QueryResult>),
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -362,6 +366,35 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                     }
                 }
             }
+
+            DbCommand::ExecuteMulti(stmts) => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        let mut results: Vec<QueryResult> = Vec::with_capacity(stmts.len());
+                        let mut exec_error: Option<String> = None;
+                        for stmt in &stmts {
+                            let start = Instant::now();
+                            match execute_query(c, stmt).await {
+                                Ok(mut r) => {
+                                    r.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                    results.push(r);
+                                }
+                                Err(e) => {
+                                    exec_error = Some(fmt_pg_error(&e));
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = evt_tx.send(DbEvent::MultiQueryResults(results));
+                        if let Some(e) = exec_error {
+                            let _ = evt_tx.send(DbEvent::QueryError(e));
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::QueryError("Not connected".into()));
+                }
+            }
+
 
             DbCommand::LoadErDiagram { schema } => {
                 if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {

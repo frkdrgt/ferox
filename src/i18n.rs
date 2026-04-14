@@ -505,4 +505,23 @@ impl I18n {
             "Rust ile yazılmış hızlı ve hafif PostgreSQL istemcisi",
         )
     }
+
+    // ── Column Statistics ─────────────────────────────────────────────────────
+
+    pub fn col_stats_menu_item(&self) -> &'static str { self.t("📊 Statistics", "📊 İstatistikler") }
+    pub fn col_stats_title(&self, col: &str) -> String {
+        match self.0 {
+            Lang::En => format!("Column: {col}"),
+            Lang::Tr => format!("Sütun: {col}"),
+        }
+    }
+    pub fn col_stats_total(&self) -> &'static str { self.t("Total rows:", "Toplam satır:") }
+    pub fn col_stats_null(&self) -> &'static str { self.t("Null:", "Null:") }
+    pub fn col_stats_distinct(&self) -> &'static str { self.t("Distinct:", "Farklı değer:") }
+    pub fn col_stats_min_len(&self) -> &'static str { self.t("Min length:", "Min uzunluk:") }
+    pub fn col_stats_max_len(&self) -> &'static str { self.t("Max length:", "Max uzunluk:") }
+    pub fn col_stats_top_values(&self) -> &'static str { self.t("Top values:", "En çok tekrar:") }
+    pub fn col_stats_source_note(&self) -> &'static str {
+        self.t("(computed from fetched rows)", "(yüklenen satırlardan hesaplandı)")
+    }
 }

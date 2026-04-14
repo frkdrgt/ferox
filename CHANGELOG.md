@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Multi-statement tabs** — when multiple `;`-separated SELECT statements are run, each result opens in its own tab instead of only showing the last one
+- **Column Statistics panel** — right-click any column header in the result table → 📊 Statistics popup shows total rows, null count/%, distinct value count, min/max text length, and top-10 most frequent values (computed from fetched rows, no extra DB round-trip)
+
+---
+
 ## [0.2.5] — 2026-04-12
 
 ### Changed

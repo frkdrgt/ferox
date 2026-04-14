@@ -19,6 +19,8 @@ pub struct TableOutput {
     /// Edit committed with Enter — (display_row, col_idx, new_value)
     pub edit_committed: Option<(usize, usize, String)>,
     pub edit_cancelled: bool,
+    /// Right-click "Statistics" on a column header → column index
+    pub col_stats_requested: Option<usize>,
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -124,6 +126,7 @@ impl<'a> ResultTable<'a> {
         let mut cell_clicked: Option<(usize, usize)> = None;
         let mut edit_committed_flag = false;
         let mut edit_cancelled_flag = false;
+        let mut col_stats_requested: Option<usize> = None;
 
         builder
             .header(24.0, |mut header| {
@@ -134,16 +137,21 @@ impl<'a> ResultTable<'a> {
                             (true, false) => format!("{col_name} ▼"),
                             _ => col_name.clone(),
                         };
-                        if ui
-                            .add(
-                                egui::Label::new(egui::RichText::new(label).strong())
-                                    .sense(egui::Sense::click()),
-                            )
-                            .clicked()
-                        {
+                        let resp = ui.add(
+                            egui::Label::new(egui::RichText::new(label).strong())
+                                .sense(egui::Sense::click()),
+                        );
+                        if resp.clicked() {
                             let asc = if sort_col == Some(i) { !sort_asc } else { true };
                             sort_changed = Some((i, asc));
                         }
+                        let col_i = i;
+                        resp.context_menu(|ui| {
+                            if ui.button("📊 Statistics").clicked() {
+                                col_stats_requested = Some(col_i);
+                                ui.close_menu();
+                            }
+                        });
                     });
                 }
             })
@@ -219,6 +227,7 @@ impl<'a> ResultTable<'a> {
             return TableOutput {
                 sort_changed: Some((self.result.columns[col].clone(), asc)),
                 cell_clicked,
+                col_stats_requested,
                 ..Default::default()
             };
         }
@@ -244,6 +253,7 @@ impl<'a> ResultTable<'a> {
             cell_clicked,
             edit_committed,
             edit_cancelled: edit_cancelled_flag,
+            col_stats_requested,
         }
     }
 

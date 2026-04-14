@@ -2,6 +2,10 @@
 
 ## Aktif (Faz 8)
 
+### Tamamlandı
+- [x] **Multi-statement tabs** — birden fazla SELECT varsa her biri ayrı tab'da açılıyor (`ExecuteMulti` + `set_multi_results_for`)
+- [x] **Sütun istatistikleri** — column header sağ-tık → null %, distinct, min/max len, top-10 değer (client-side, DB roundtrip yok)
+
 ### Küçük Eksikler
 - [ ] Bağlantı dialog'unda "Test Connection" butonu
 - [ ] Sorgu editöründe Ctrl+A ile tümünü seç
@@ -11,6 +15,15 @@
 ---
 
 ## Tamamlanan
+
+### Faz 8 — Multi-statement Tabs + Sütun İstatistikleri ✓
+- [x] Multi-statement sorgu çalıştırınca her SELECT sonucu ayrı tab'da açılıyor
+- [x] Sütun başlığına sağ-tık → 📊 Statistics popup (null %, distinct, min/max uzunluk, top-10 değer)
+- [x] `split_sql_statements()` — single-quote ve `--` comment'i doğru atlayan SQL bölücü
+- [x] `DbCommand::ExecuteMulti` + `DbEvent::MultiQueryResults` (yeni kanal mesajları)
+- [x] `TabManager::set_multi_results_for` — ilk sonuç mevcut tab, kalanlar yeni tab
+- [x] `ColumnStats::compute()` — in-memory O(n) hesaplama, sıfır DB yükü
+- [x] `ResultTable` column header context menu + `TableOutput::col_stats_requested`
 
 ### Faz 7 — i18n, Settings Menüsü, v0.2.3 ✓
 - [x] Tam EN/TR lokalizasyon — tüm UI string'leri çift dil; seçim config'e kaydediliyor

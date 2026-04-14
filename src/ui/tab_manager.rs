@@ -338,6 +338,39 @@ impl TabManager {
         }
     }
 
+    /// Route multi-statement results: first result → running tab, rest → new tabs.
+    pub fn set_multi_results_for(&mut self, conn_id: usize, results: Vec<QueryResult>) {
+        let primary_idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);
+        let saved_active = self.active;
+        let mut results_iter = results.into_iter();
+
+        if let Some(first) = results_iter.next() {
+            if let Some(t) = self.tabs.get_mut(primary_idx) {
+                if let Some(p) = t.panel_mut() {
+                    p.set_result(first);
+                }
+            }
+        }
+
+        for result in results_iter {
+            let id = self.next_id;
+            self.next_id += 1;
+            let num = self.next_num;
+            self.next_num += 1;
+            self.tabs.push(Tab {
+                id,
+                title: format!("Query {num}"),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id,
+            });
+            if let Some(p) = self.tabs.last_mut().and_then(|t| t.panel_mut()) {
+                p.set_result(result);
+            }
+        }
+
+        self.active = saved_active;
+    }
+
     /// Route a query error to the tab that started the query for this conn_id.
     pub fn set_error_for(&mut self, conn_id: usize, msg: String) {
         let idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);

@@ -274,6 +274,9 @@ impl PgClientApp {
                     DbEvent::QueryResult(result) => {
                         self.tab_manager.set_result_for(conn_id, result);
                     }
+                    DbEvent::MultiQueryResults(results) => {
+                        self.tab_manager.set_multi_results_for(conn_id, results);
+                    }
                     DbEvent::QueryError(msg) => {
                         self.tab_manager.set_error_for(conn_id, msg);
                     }
