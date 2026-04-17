@@ -12,6 +12,32 @@ use crate::ui::syntax::highlight_sql;
 const PAGE_SIZE: usize = 100;
 const MAX_LOG: usize = 200;
 
+// ── Column width helper ───────────────────────────────────────────────────────
+
+/// Sample up to 200 rows to compute content-aware initial column widths.
+/// Called once per result set; never runs per-frame.
+fn compute_col_widths(result: &QueryResult) -> Vec<f32> {
+    const SAMPLE: usize = 200;
+    const CHAR_PX: f32 = 7.5;
+    const PAD: f32 = 20.0;
+
+    let mut max_chars: Vec<usize> = result.columns.iter().map(|c| c.len()).collect();
+    for row in result.rows.iter().take(SAMPLE) {
+        for (i, cell) in row.iter().enumerate() {
+            if i < max_chars.len() {
+                let len = cell.to_string().len().min(50);
+                if len > max_chars[i] {
+                    max_chars[i] = len;
+                }
+            }
+        }
+    }
+    max_chars
+        .iter()
+        .map(|&n| (n as f32 * CHAR_PX + PAD).max(60.0).min(300.0))
+        .collect()
+}
+
 // ── SQL statement splitter ────────────────────────────────────────────────────
 
 /// Split SQL at `;` boundaries, correctly skipping `;` inside single-quoted
@@ -253,6 +279,14 @@ pub struct QueryPanel {
     selected_cell: Option<(usize, usize)>,
     /// Cached sort order for the current result — reused across frames.
     sorted_indices: Vec<usize>,
+    /// Filtered view of sorted_indices — only recomputed when filter/sort/result changes.
+    display_indices: Vec<usize>,
+    /// Filter text when display_indices was last computed (used for dirty detection).
+    display_filter_cache: String,
+    /// When true, display_indices must be recomputed before next render.
+    display_dirty: bool,
+    /// Content-aware initial column widths computed once per result set.
+    col_widths: Vec<f32>,
     // ── Autocomplete ─────────────────────────────────────────────────────────
     autocomplete: Autocomplete,
     completion_tables: Vec<String>,
@@ -286,6 +320,10 @@ impl Default for QueryPanel {
             result_filter: String::new(),
             selected_cell: None,
             sorted_indices: Vec::new(),
+            display_indices: Vec::new(),
+            display_filter_cache: String::new(),
+            display_dirty: false,
+            col_widths: Vec::new(),
             autocomplete: Autocomplete::default(),
             completion_tables: Vec::new(),
             completion_columns: Vec::new(),
@@ -374,8 +412,12 @@ impl QueryPanel {
         }
 
         let n = result.rows.len();
+        self.col_widths = compute_col_widths(&result);
         self.result = Some(result);
         self.sorted_indices = (0..n).collect();
+        self.display_indices = (0..n).collect();
+        self.display_filter_cache = String::new();
+        self.display_dirty = false;
         self.selected_cell = None;
         if self.result.as_ref().map(|r| !r.columns.is_empty()).unwrap_or(false) {
             self.active_tab = PanelTab::Results;
@@ -935,15 +977,35 @@ impl QueryPanel {
                     }
 
                     if self.result.is_some() {
+                        // ── Invalidate display_indices when filter/sort/result changed ──
+                        if self.display_dirty || self.result_filter != self.display_filter_cache {
+                            if let Some(result) = &self.result {
+                                if self.result_filter.is_empty() {
+                                    self.display_indices = self.sorted_indices.clone();
+                                } else {
+                                    let f = self.result_filter.to_lowercase();
+                                    self.display_indices = self.sorted_indices.iter().copied()
+                                        .filter(|&i| {
+                                            result.rows[i].iter().any(|cell| {
+                                                cell.to_string().to_lowercase().contains(&f)
+                                            })
+                                        })
+                                        .collect();
+                                }
+                                self.display_filter_cache = self.result_filter.clone();
+                                self.display_dirty = false;
+                            }
+                        }
+
                         // ── Build and show table ─────────────────────────────
                         let output = {
                             let result = self.result.as_ref().unwrap();
                             let mut table = ResultTable::with_indices(
                                 result,
                                 std::mem::take(&mut self.sorted_indices),
+                                self.col_widths.clone(),
                             );
                             table.db_sort_mode = self.browse.is_some();
-                            table.filter_text = self.result_filter.clone();
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);
                             }
@@ -968,7 +1030,7 @@ impl QueryPanel {
                                 table.edit_needs_focus = self.edit_needs_focus;
                             }
 
-                            let out = table.show(ui, i18n);
+                            let out = table.show(ui, i18n, &self.display_indices);
 
                             // Save back edit state (value may have changed)
                             if let (Some(r), Some(c)) = (table.edit_row, table.edit_col) {
@@ -982,6 +1044,7 @@ impl QueryPanel {
                         let (output, sorted_indices) = output;
 
                         // ── Handle sort ──────────────────────────────────────
+                        let sort_did_change = output.sort_changed.is_some();
                         if let (Some((col_name, asc)), Some(state)) =
                             (output.sort_changed, &mut self.browse)
                         {
@@ -1051,6 +1114,10 @@ impl QueryPanel {
 
                         // Save sorted indices back for next frame (avoids per-frame reallocation).
                         self.sorted_indices = sorted_indices;
+                        // If sort changed, display_indices must be recomputed next frame.
+                        if sort_did_change {
+                            self.display_dirty = true;
+                        }
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();

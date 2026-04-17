@@ -34,8 +34,8 @@ pub struct ResultTable<'a> {
     pub sorted_indices: Vec<usize>,
     /// When true, skip client-side sort; caller re-queries DB.
     pub db_sort_mode: bool,
-    /// Client-side text filter applied to all cell values.
-    pub filter_text: String,
+    /// Initial column widths computed from content (empty = uniform fallback).
+    pub col_widths: Vec<f32>,
     // ── Inline edit (set by caller, read back after show()) ──────────────────
     /// Display-row being edited (None = not editing).
     pub edit_row: Option<usize>,
@@ -48,7 +48,8 @@ pub struct ResultTable<'a> {
 
 impl<'a> ResultTable<'a> {
     /// Create with externally managed sorted_indices (avoids per-frame allocation).
-    pub fn with_indices(result: &'a QueryResult, sorted_indices: Vec<usize>) -> Self {
+    /// `col_widths`: content-aware initial widths pre-computed by caller; empty = uniform fallback.
+    pub fn with_indices(result: &'a QueryResult, sorted_indices: Vec<usize>, col_widths: Vec<f32>) -> Self {
         Self {
             result,
             selected_row: None,
@@ -57,7 +58,7 @@ impl<'a> ResultTable<'a> {
             sort_asc: true,
             sorted_indices,
             db_sort_mode: false,
-            filter_text: String::new(),
+            col_widths,
             edit_row: None,
             edit_col: None,
             edit_value: String::new(),
@@ -65,7 +66,8 @@ impl<'a> ResultTable<'a> {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> TableOutput {
+    /// `display_indices`: pre-filtered & sorted slice managed by caller (avoids per-frame clone/scan).
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n, display_indices: &[usize]) -> TableOutput {
         if self.result.columns.is_empty() {
             if let Some(n) = self.result.rows_affected {
                 ui.label(i18n.query_ok_rows(n));
@@ -77,7 +79,8 @@ impl<'a> ResultTable<'a> {
 
         let col_count = self.result.columns.len();
 
-        let col_width = (ui.available_width() / col_count as f32)
+        // Use content-aware widths when available, uniform fallback otherwise.
+        let uniform_col_width = (ui.available_width() / col_count as f32)
             .max(60.0)
             .min(300.0);
 
@@ -87,14 +90,14 @@ impl<'a> ResultTable<'a> {
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .min_scrolled_height(0.0);
 
-        for _ in 0..col_count {
-            builder = builder.column(Column::initial(col_width).resizable(true));
+        for i in 0..col_count {
+            let w = self.col_widths.get(i).copied().unwrap_or(uniform_col_width);
+            builder = builder.column(Column::initial(w).resizable(true));
         }
 
         // ── Extract fields needed inside closures ─────────────────────────────
         // Copy/clone to avoid capturing `self` by &mut inside the closures,
         // which would conflict with `self.edit_value = …` after the builder.
-        let sorted_indices = self.sorted_indices.clone();
         let sort_col = self.sort_col;
         let sort_asc = self.sort_asc;
         let selected_row = self.selected_row;
@@ -104,22 +107,6 @@ impl<'a> ResultTable<'a> {
         let edit_needs_focus = self.edit_needs_focus;
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
-
-        // Apply client-side filter on sorted_indices (does not mutate sorted_indices)
-        let display_indices: Vec<usize> = if !self.filter_text.is_empty() {
-            let f = self.filter_text.to_lowercase();
-            sorted_indices
-                .iter()
-                .copied()
-                .filter(|&i| {
-                    self.result.rows[i]
-                        .iter()
-                        .any(|cell| cell.to_string().to_lowercase().contains(&f))
-                })
-                .collect()
-        } else {
-            sorted_indices  // move: filter empty, no extra allocation
-        };
 
         let mut sort_changed: Option<(usize, bool)> = None;
         let mut cell_double_clicked: Option<(usize, usize)> = None;
@@ -158,7 +145,7 @@ impl<'a> ResultTable<'a> {
             .body(|body| {
                 body.rows(20.0, display_indices.len(), |mut row| {
                     let display_idx = row.index();
-                    let actual_idx = display_indices[display_idx];
+                    let actual_idx = display_indices[display_idx]; // caller-managed, no per-frame alloc
                     let row_data = &self.result.rows[actual_idx];
 
                     row.set_selected(selected_row == Some(display_idx));

@@ -214,6 +214,8 @@ pub struct Sidebar {
     functions: HashMap<String, Vec<FunctionInfo>>,
     /// Whether the FUNCTIONS section is expanded per schema.
     expanded_functions: HashMap<String, bool>,
+    /// Schemas currently being refreshed in the background (stale data still shown).
+    refreshing: std::collections::HashSet<String>,
 }
 
 impl Sidebar {
@@ -226,6 +228,7 @@ impl Sidebar {
         self.table_details.clear();
         self.functions.clear();
         self.expanded_functions.clear();
+        self.refreshing.clear();
         self.selected = None;
     }
 
@@ -240,6 +243,7 @@ impl Sidebar {
     pub fn set_tables(&mut self, schema: &str, tables: Vec<TableInfo>) {
         self.tables.insert(schema.to_owned(), tables);
         self.tables_loaded_at.insert(schema.to_owned(), Instant::now());
+        self.refreshing.remove(schema);
     }
 
     pub fn schema_names(&self) -> Vec<String> {
@@ -309,6 +313,7 @@ impl Sidebar {
         let mut actions: Vec<SidebarAction> = Vec::new();
 
         // ── F5: force-refresh all expanded schemas ─────────────────────────────
+        // Stale data stays visible during reload; `refreshing` marks them as in-progress.
         if ui.input(|i| i.key_pressed(egui::Key::F5)) {
             let to_reload: Vec<String> = self
                 .expanded
@@ -317,9 +322,8 @@ impl Sidebar {
                 .map(|(k, _)| k.clone())
                 .collect();
             for schema_name in to_reload {
-                self.tables.remove(&schema_name);
                 self.tables_loaded_at.remove(&schema_name);
-                self.functions.remove(&schema_name);
+                self.refreshing.insert(schema_name.clone());
                 actions.push(SidebarAction::LoadTables(schema_name.clone()));
                 actions.push(SidebarAction::LoadFunctions(schema_name));
             }
@@ -423,7 +427,15 @@ impl Sidebar {
                                 egui::FontId::proportional(13.0),
                                 COLOR_SCHEMA,
                             );
-                            if filter.is_empty() && !tables.is_empty() {
+                            if self.refreshing.contains(&schema.name) {
+                                painter.text(
+                                    rect.right_center() + Vec2::new(-8.0, 0.0),
+                                    egui::Align2::RIGHT_CENTER,
+                                    "↻",
+                                    egui::FontId::proportional(11.0),
+                                    Color32::from_rgb(120, 160, 200),
+                                );
+                            } else if filter.is_empty() && !tables.is_empty() {
                                 let badge = format!("{}", tables.len());
                                 painter.text(
                                     rect.right_center() + Vec2::new(-8.0, 0.0),
