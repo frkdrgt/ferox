@@ -325,6 +325,42 @@ pub async fn load_schema_snapshot(
     rows
 }
 
+/// Fetch ALL user tables + columns from `information_schema.columns`.
+/// Returns a compact multi-line string:
+/// `- schema.table (col1 type1, col2 type2, ...)`
+/// Excludes system schemas (pg_catalog, information_schema, pg_toast*).
+pub async fn load_full_schema_for_ai(client: &Client) -> String {
+    let sql = "SELECT table_schema, table_name, column_name, udt_name \
+               FROM information_schema.columns \
+               WHERE table_schema NOT IN ('pg_catalog','information_schema','pg_toast') \
+                 AND table_schema NOT LIKE 'pg_temp_%' \
+                 AND table_schema NOT LIKE 'pg_toast_temp_%' \
+               ORDER BY table_schema, table_name, ordinal_position";
+
+    let mut map: std::collections::BTreeMap<(String, String), Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    if let Ok(msgs) = client.simple_query(sql).await {
+        for msg in msgs {
+            if let tokio_postgres::SimpleQueryMessage::Row(r) = msg {
+                let schema = r.get(0).unwrap_or("").to_owned();
+                let table  = r.get(1).unwrap_or("").to_owned();
+                let col    = r.get(2).unwrap_or("").to_owned();
+                let dtype  = r.get(3).unwrap_or("").to_owned();
+                map.entry((schema, table))
+                    .or_default()
+                    .push(format!("{col} {dtype}"));
+            }
+        }
+    }
+
+    let mut out = String::new();
+    for ((schema, table), cols) in &map {
+        out.push_str(&format!("- {schema}.{table} ({})\n", cols.join(", ")));
+    }
+    out
+}
+
 // ── Dashboard stats ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

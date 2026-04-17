@@ -250,6 +250,38 @@ impl Sidebar {
         self.schemas.iter().map(|s| s.name.clone()).collect()
     }
 
+    /// Build a compact schema summary for the Claude AI prompt.
+    /// Includes table names and, when already loaded, column names.
+    pub fn schema_context_for_ai(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let mut schemas: Vec<&str> = self.tables.keys().map(|s| s.as_str()).collect();
+        schemas.sort();
+        for schema in schemas {
+            if let Some(tables) = self.tables.get(schema) {
+                for t in tables {
+                    let key = (t.schema.clone(), t.name.clone());
+                    if let Some(details) = self.table_details.get(&key) {
+                        let cols: Vec<String> = details
+                            .columns
+                            .iter()
+                            .map(|c| {
+                                if c.data_type.is_empty() {
+                                    c.name.clone()
+                                } else {
+                                    format!("{} {}", c.name, c.data_type)
+                                }
+                            })
+                            .collect();
+                        lines.push(format!("- {}.{} ({})", schema, t.name, cols.join(", ")));
+                    } else {
+                        lines.push(format!("- {}.{}", schema, t.name));
+                    }
+                }
+            }
+        }
+        lines.join("\n")
+    }
+
     /// Returns (table_names, column_names) for autocomplete.
     pub fn completion_data(&self) -> (Vec<String>, Vec<String>) {
         let mut tables = Vec::new();

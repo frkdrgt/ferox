@@ -1,6 +1,6 @@
 [package]
 name = "ferox"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2024"
 description = "Blazing-fast lightweight PostgreSQL client built in Rust"
 authors = []
@@ -44,6 +44,9 @@ async-trait = "0.1"
 
 # Icon loading
 image = { version = "0.24", default-features = false, features = ["png"] }
+
+# HTTP client for Claude AI API
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }

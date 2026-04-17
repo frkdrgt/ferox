@@ -295,6 +295,16 @@ pub struct QueryPanel {
     pub lang: Lang,
     /// Column statistics popup state.
     col_stats: Option<ColumnStats>,
+    // ── AI / NL→SQL ──────────────────────────────────────────────────────────
+    /// Whether the NL input bar is visible.
+    pub nl_bar_visible: bool,
+    /// Current text in the NL input.
+    pub nl_input: String,
+    /// Pending NL prompt waiting to be picked up by the app and sent to AI.
+    /// Set by QueryPanel; cleared (taken) by the app each frame.
+    pub nl_submit: Option<String>,
+    /// True while an AI request is in flight — spinner shown, input disabled.
+    pub ai_pending: bool,
 }
 
 impl Default for QueryPanel {
@@ -329,6 +339,10 @@ impl Default for QueryPanel {
             completion_columns: Vec::new(),
             lang: Lang::En,
             col_stats: None,
+            nl_bar_visible: false,
+            nl_input: String::new(),
+            nl_submit: None,
+            ai_pending: false,
         }
     }
 }
@@ -426,6 +440,21 @@ impl QueryPanel {
 
     pub fn set_primary_key(&mut self, schema: &str, table: &str, cols: Vec<String>) {
         self.pk_cols.insert((schema.to_owned(), table.to_owned()), cols);
+    }
+
+    /// Called by the app when Claude returns a SQL string. Inserts into editor.
+    pub fn set_ai_result(&mut self, sql: String) {
+        self.ai_pending = false;
+        self.sql = sql;
+        self.nl_input.clear();
+        self.nl_bar_visible = false;
+    }
+
+    /// Called by the app when the AI call fails.
+    pub fn set_ai_error(&mut self, msg: String) {
+        self.ai_pending = false;
+        self.push_log(LogEntry::error(format!("AI: {msg}")));
+        self.active_tab = PanelTab::Messages;
     }
 
     pub fn set_error(&mut self, msg: String) {
@@ -543,6 +572,7 @@ impl QueryPanel {
         db_tx: &Sender<DbCommand>,
         history: &mut QueryHistory,
         i18n: &I18n,
+        ai_enabled: bool,
     ) {
         // Auto-refresh after a DML (UPDATE/INSERT/DELETE) in browse mode.
         if self.pending_refresh {
@@ -674,7 +704,52 @@ impl QueryPanel {
                         self.run_sql_file(db_tx);
                     }
 
+                    // ── Group 6: AI (shown only when API key configured) ───────
+                    if ai_enabled {
+                        ui.separator();
+                        let ai_label = if self.nl_bar_visible { "✦ AI ▲" } else { "✦ AI" };
+                        let ai_fill = if self.nl_bar_visible {
+                            egui::Color32::from_rgb(60, 90, 140)
+                        } else {
+                            egui::Color32::from_rgb(45, 65, 100)
+                        };
+                        if ui
+                            .add(egui::Button::new(ai_label).fill(ai_fill))
+                            .on_hover_text("Natural language → SQL (Claude AI)")
+                            .clicked()
+                        {
+                            self.nl_bar_visible = !self.nl_bar_visible;
+                        }
+                    }
                 });
+
+                // ── NL bar (shown when AI enabled and toggled open) ───────────
+                if ai_enabled && self.nl_bar_visible {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        let hint = egui::RichText::new("Describe your query…")
+                            .color(egui::Color32::from_gray(90));
+                        let te = egui::TextEdit::singleline(&mut self.nl_input)
+                            .hint_text(hint)
+                            .desired_width(ui.available_width() - 80.0);
+                        let te_resp = ui.add_enabled(!self.ai_pending, te);
+
+                        let submit = (!self.ai_pending && !self.nl_input.trim().is_empty())
+                            && (ui.button("→").clicked()
+                                || te_resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+
+                        if submit {
+                            self.nl_submit = Some(self.nl_input.trim().to_owned());
+                            self.ai_pending = true;
+                        }
+
+                        if self.ai_pending {
+                            ui.spinner();
+                        }
+                    });
+                    ui.add_space(2.0);
+                }
 
                 // Ctrl+Space: force-show autocomplete
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space)) {

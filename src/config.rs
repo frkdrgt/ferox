@@ -107,12 +107,81 @@ impl std::fmt::Display for SslMode {
     }
 }
 
+// ── AI provider config ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiConfig {
+    /// "claude" | "groq" | "ollama" | "openai"
+    #[serde(default = "AiConfig::default_provider")]
+    pub provider: String,
+    /// API key (empty = no auth, e.g. local Ollama)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    /// Model name override — empty = use provider default
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    /// Base URL override — empty = use provider default
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
+}
+
+impl AiConfig {
+    fn default_provider() -> String { "claude".to_owned() }
+
+    pub fn is_configured(&self) -> bool {
+        match self.provider.as_str() {
+            "ollama" => true,           // no key needed
+            _ => !self.api_key.is_empty(),
+        }
+    }
+
+    pub fn effective_base_url(&self) -> &str {
+        if !self.base_url.is_empty() {
+            return &self.base_url;
+        }
+        match self.provider.as_str() {
+            "groq"   => "https://api.groq.com/openai/v1",
+            "ollama" => "http://localhost:11434/v1",
+            "openai" => "https://api.openai.com/v1",
+            _        => "",   // claude uses its own URL
+        }
+    }
+
+    pub fn effective_model(&self) -> &str {
+        if !self.model.is_empty() {
+            return &self.model;
+        }
+        match self.provider.as_str() {
+            "claude" => "claude-haiku-4-5-20251001",
+            "groq"   => "llama-3.3-70b-versatile",
+            "ollama" => "llama3.2",
+            "openai" => "gpt-4o-mini",
+            _        => "gpt-4o-mini",
+        }
+    }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            provider: Self::default_provider(),
+            api_key: String::new(),
+            model: String::new(),
+            base_url: String::new(),
+        }
+    }
+}
+
+// ── App config ────────────────────────────────────────────────────────────────
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub connections: Vec<ConnectionProfile>,
     #[serde(default)]
     pub language: Lang,
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 impl AppConfig {

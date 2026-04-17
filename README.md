@@ -47,6 +47,30 @@
 
 ## Features
 
+### ✨ AI — Natural Language to SQL
+
+Press **`Ctrl+I`** (or the `AI` button in the toolbar) to open the NL bar. Type plain English — Ferox fetches the live schema from your DB and sends it to the AI, so the generated query always uses your real tables and columns.
+
+```
+"show me the top 10 customers by total order value in the last 30 days"
+```
+
+Ferox sends the full live schema as context — the AI sees every table, column, and type in the connected database. No hallucinated table names.
+
+**Supported providers** (configure via `Settings → AI`):
+
+| Provider | Notes |
+|----------|-------|
+| **Anthropic Claude** | `claude-haiku-4-5` by default — fast and cheap |
+| **Groq** | `llama-3.3-70b-versatile` — free tier available |
+| **Ollama** | Fully local, no API key, no data leaves your machine |
+| **OpenAI** | `gpt-4o-mini` by default |
+| **Custom / OpenRouter** | Any OpenAI-compatible endpoint via base URL override |
+
+The generated SQL is placed directly in the active query editor — review it, tweak it, run it.
+
+---
+
 ### Core
 - **Multi-tab query editor** — Ctrl+T new tab, Ctrl+W close, right-click for Close / Close Others / Close All
 - **Per-table tabs** — clicking a table opens it in its own tab; existing tabs are reused
@@ -63,7 +87,6 @@
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
 - **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
 - **Join Builder** — visual multi-table JOIN composer (`Query → Join Builder…`)
-
 - **Column statistics** — right-click any column header → null %, distinct count, min/max length, top values
 
 ### Developer Experience
@@ -189,24 +212,26 @@ Query history lives at `~/.local/share/ferox/history.txt` (max 500 entries).
 
 ## Architecture
 
-Ferox is deliberately simple. Two threads, zero shared mutable state between them:
+Ferox uses three dedicated threads, zero shared mutable state between them:
 
 ```
-┌─────────────────────────────────────┐
-│         UI Thread (eframe)          │
-│  egui immediate-mode rendering      │
-│  sidebar · tabs · join builder      │
-└──────────┬────────────┬─────────────┘
-           │ DbCommand  │ DbEvent
-           ▼            ▼
-┌─────────────────────────────────────┐
-│         DB Thread (tokio)           │
-│  tokio-postgres · native-tls        │
-│  async queries · metadata loading   │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                  UI Thread (eframe)                      │
+│   egui immediate-mode rendering                          │
+│   sidebar · tabs · join builder · NL bar                 │
+└────────┬───────────┬──────────────┬───────────┬──────────┘
+         │ DbCommand │ DbEvent      │ AiCommand │ AiEvent
+         ▼           ▼              ▼           ▼
+┌────────────────────┐   ┌─────────────────────────────────┐
+│   DB Thread        │   │        AI Thread (tokio)        │
+│   (tokio)          │   │  reqwest · Anthropic / OpenAI   │
+│   tokio-postgres   │   │  Groq · Ollama · custom         │
+│   native-tls       │   │  Schema context fetched live    │
+│   async queries    │   │  from DB before every request   │
+└────────────────────┘   └─────────────────────────────────┘
 ```
 
-All DB communication goes through `mpsc` channels — the UI thread never blocks.
+All communication goes through `mpsc` channels — the UI thread never blocks.
 
 ---
 
@@ -217,9 +242,10 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 | GUI framework | [`egui`](https://github.com/emilk/egui) + `eframe` |
 | Table widget | `egui_extras` |
 | PostgreSQL driver | [`tokio-postgres`](https://github.com/sfackler/rust-postgres) |
-| Async runtime | `tokio` (current-thread in DB thread) |
+| Async runtime | `tokio` (current-thread per worker thread) |
 | TLS | `native-tls` + `postgres-native-tls` |
 | SSH tunnel | `russh` |
+| AI HTTP client | `reqwest` (native-tls, JSON) |
 | SQL highlighting | custom zero-dependency tokenizer (`src/ui/syntax.rs`) |
 | Config | `serde` + `toml` |
 | File dialogs | [`rfd`](https://github.com/PolyMeilex/rfd) |
@@ -242,11 +268,61 @@ All DB communication goes through `mpsc` channels — the UI thread never blocks
 - [x] **Test Connection** — verify credentials before connecting, from the connection dialog
 - [x] **Close connection** — disconnect and remove a connection from the sidebar with one click
 - [x] **Connection status indicators** — color-coded dots replacing broken emoji squares on Windows
+- [x] **AI: Natural Language → SQL** — multi-provider (Claude, Groq, Ollama, OpenAI, custom), live schema context
 - [ ] **Ctrl+A** select-all in query editor
 - [ ] **Bookmarked queries** — save & name frequently used SQL
 - [ ] **Dark / light theme toggle** — runtime switch
 - [ ] **Result diff** — compare two query results side-by-side
 - [ ] **CSV / JSON import** — drag-and-drop data into a table
+
+---
+
+## Changelog
+
+### v0.2.6 — AI & Performance
+
+**AI: Natural Language → SQL**
+- New AI worker thread (separate tokio runtime, non-blocking)
+- `Ctrl+I` / AI button opens NL bar in the active query tab
+- Full live schema fetched from `information_schema.columns` before every request — AI sees every real table and column, never invents names
+- Multi-provider support out of the box:
+  - **Anthropic Claude** (`claude-haiku-4-5` default)
+  - **Groq** (`llama-3.3-70b-versatile`, free tier)
+  - **Ollama** (fully local, no key, no egress)
+  - **OpenAI** (`gpt-4o-mini`)
+  - **Custom** — any OpenAI-compatible endpoint via base URL
+- `Settings → AI` panel: provider selector, API key, model override, base URL override
+- Generated SQL lands directly in the active editor tab
+
+**Performance**
+- `display_indices` cache — filter/sort indices computed once and cached with dirty flag; no O(n×cols) scan per frame
+- Content-aware initial column widths (`compute_col_widths`) — samples 200 rows once per result set
+- Schema F5 refresh no-flash — stale table list stays visible with `↻` badge until new data arrives; replaced atomically
+
+**Schema diff & function browser** (v0.2.5.x)
+- Schema snapshot diff: compare two points-in-time for any schema
+- Function/procedure browser in the sidebar
+
+---
+
+### v0.2.5 — Multi-statement, Column Stats, Rust 2024
+
+- Multi-statement execution: `;`-separated statements run in sequence, each result in its own tab
+- Column statistics panel: right-click any column header for null %, distinct count, min/max, top values
+- Migrated to Rust 2024 edition
+
+### v0.2.3 — i18n, Settings, About
+
+- Full EN/TR bilingual UI; language persists to config
+- Settings menu with language switcher
+- About dialog
+
+### v0.2.0 — SSH, ER Diagram, Join Builder
+
+- SSH tunnel support (russh)
+- ER diagram viewer with FK arrows, pan/zoom, draggable nodes
+- Visual Join Builder (`Query → Join Builder…`)
+- Safe mode transactions
 
 ---
 

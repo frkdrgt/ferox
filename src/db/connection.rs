@@ -41,6 +41,8 @@ pub enum DbCommand {
     LoadFunctions { schema: String },
     /// Load (table, column, udt_name) snapshot for schema diff.
     LoadSchemaSnapshot { schema: String, request_id: u64 },
+    /// Fetch full schema context for AI (all user schemas, tables, columns).
+    LoadFullSchemaForAi { request_id: u64 },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -80,6 +82,8 @@ pub enum DbEvent {
     Functions { schema: String, functions: Vec<FunctionInfo> },
     /// Schema snapshot rows for diff (table, column, udt_name).
     SchemaSnapshot { request_id: u64, rows: Vec<(String, String, String)> },
+    /// Full schema context string for AI NL→SQL.
+    AiSchemaReady { request_id: u64, context: String },
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -437,6 +441,17 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         }
                     }
+                }
+            }
+
+            DbCommand::LoadFullSchemaForAi { request_id } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let context = metadata::load_full_schema_for_ai(c).await;
+                        let _ = evt_tx.send(DbEvent::AiSchemaReady { request_id, context });
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::AiSchemaReady { request_id, context: String::new() });
                 }
             }
         }

@@ -436,6 +436,25 @@ impl TabManager {
         }
     }
 
+    /// Take the pending NL prompt from the active panel (if any).
+    pub fn take_active_nl_submit(&mut self) -> Option<String> {
+        self.active_panel_mut()?.nl_submit.take()
+    }
+
+    /// Deliver AI-generated SQL to the active panel.
+    pub fn set_active_ai_result(&mut self, sql: String) {
+        if let Some(p) = self.active_panel_mut() {
+            p.set_ai_result(sql);
+        }
+    }
+
+    /// Deliver AI error to the active panel.
+    pub fn set_active_ai_error(&mut self, msg: String) {
+        if let Some(p) = self.active_panel_mut() {
+            p.set_ai_error(msg);
+        }
+    }
+
     /// True if any tab is currently awaiting a DB result.
     pub fn is_running(&self) -> bool {
         !self.running_tabs.is_empty()
@@ -539,6 +558,7 @@ impl TabManager {
         conns: &[(usize, &str, &Sender<DbCommand>)],
         history: &mut QueryHistory,
         i18n: &I18n,
+        ai_enabled: bool,
     ) {
         // ── Keyboard shortcuts ────────────────────────────────────────────────
         let active_conn_id = self.active_tab_conn_id();
@@ -629,7 +649,7 @@ impl TabManager {
                 if let Some(db_tx) = db_tx_opt {
                     let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if let Some(p) = self.tabs[active_idx].panel_mut() {
-                        p.show(ui, db_tx, history, i18n);
+                        p.show(ui, db_tx, history, i18n, ai_enabled);
                     }
                     let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if !was_running && is_running_now {

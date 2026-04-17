@@ -106,9 +106,19 @@ cargo build --release # ~6.9MB binary, LTO
 - **Faz 5**: Uygulama ikonu, release CI/CD, UI modernizasyon ✓
 - **Faz 6**: Multi-statement queries, per-table tabs, view/matview browse fix, RAM optimizasyonları ✓
 - **Faz 7**: EN/TR i18n, Settings menüsü, About dialog, app title → ferox, v0.2.3 ✓
+- **Faz 8**: Schema diff, function browser, column stats, perf (display_indices cache, col widths, F5 no-flash) ✓
+- **Faz 9**: AI NL→SQL — Claude/Groq/Ollama/OpenAI/custom, live DB schema context, Settings→AI, v0.2.6 ✓
+
+## AI Modülü (src/ai.rs)
+- `AiHandle::spawn()` — ayrı std::thread + kendi current_thread tokio runtime'ı
+- `AiCommand::NlToSql { prompt, schema_context }` / `AiCommand::SetConfig(AiConfig)`
+- `AiEvent::Thinking` / `AiEvent::SqlGenerated(String)` / `AiEvent::Error(String)`
+- `call_claude()` → Anthropic Messages API (`/v1/messages`)
+- `call_openai_compat()` → OpenAI-compatible (`/v1/chat/completions`) — Groq/Ollama/OpenAI/custom
+- Schema context: `DbCommand::LoadFullSchemaForAi` → `metadata::load_full_schema_for_ai()` → `information_schema.columns` → `DbEvent::AiSchemaReady`
+- Two-step flow: nl_submit → LoadFullSchemaForAi → AiSchemaReady → NlToSql
 
 ## Kalan İşler
-- Test Connection butonu (bağlantı dialog'unda)
 - Ctrl+A ile tümünü seç (sorgu editörü)
 - NULL renk tercihi config'e kaydet
 - Büyük sonuç setlerinde column width hesabı lazy yap

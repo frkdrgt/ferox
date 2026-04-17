@@ -2,7 +2,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use egui::{Color32, RichText};
 
 use crate::{
-    config::AppConfig,
+    ai::{AiCommand, AiEvent, AiHandle},
+    config::{AiConfig, AppConfig},
     db::{DbCommand, DbEvent, DbHandle},
     history::QueryHistory,
     i18n::{I18n, Lang},
@@ -63,6 +64,18 @@ pub struct PgClientApp {
     pub about_texture: Option<egui::TextureHandle>,
     /// One-shot channel for "Test Connection" — spawned only while testing.
     test_conn: Option<(Sender<DbCommand>, Receiver<DbEvent>)>,
+
+    // ── AI / Claude ───────────────────────────────────────────────────────────
+    /// Channel to send commands to the AI worker thread.
+    ai_tx: Sender<AiCommand>,
+    /// Channel to receive events from the AI worker thread.
+    ai_rx: Receiver<AiEvent>,
+    /// Draft copy of AI config edited in Settings dialog before saving.
+    ai_draft: AiConfig,
+    /// NL prompt waiting for schema fetch before being sent to AI thread.
+    pending_ai_prompt: Option<String>,
+    /// request_id counter for schema fetch round-trips.
+    ai_schema_req_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +122,12 @@ impl PgClientApp {
             }
         };
 
+        // Spawn the AI worker thread — runs for the lifetime of the app.
+        let (ai_cmd_tx, ai_cmd_rx) = mpsc::channel::<AiCommand>();
+        let (ai_evt_tx, ai_evt_rx) = mpsc::channel::<AiEvent>();
+        AiHandle::spawn(config.ai.clone(), ai_cmd_rx, ai_evt_tx);
+        let ai_draft = config.ai.clone();
+
         Self {
             connections: Vec::new(),
             active_conn: 0,
@@ -125,6 +144,11 @@ impl PgClientApp {
             show_about: false,
             about_texture,
             test_conn: None,
+            ai_tx: ai_cmd_tx,
+            ai_rx: ai_evt_rx,
+            ai_draft,
+            pending_ai_prompt: None,
+            ai_schema_req_id: 0,
         }
     }
 
@@ -283,6 +307,13 @@ impl PgClientApp {
                     DbEvent::SchemaSnapshot { request_id, rows } => {
                         self.tab_manager.deliver_schema_snapshot(request_id, rows);
                     }
+                    DbEvent::AiSchemaReady { request_id, context } => {
+                        if request_id == self.ai_schema_req_id {
+                            if let Some(prompt) = self.pending_ai_prompt.take() {
+                                let _ = self.ai_tx.send(AiCommand::NlToSql { prompt, schema_context: context });
+                            }
+                        }
+                    }
                     DbEvent::QueryError(msg) => {
                         self.tab_manager.set_error_for(conn_id, msg);
                     }
@@ -342,6 +373,22 @@ impl PgClientApp {
                 Some(Err(message))
             };
             self.test_conn = None;
+        }
+    }
+
+    fn process_ai_events(&mut self) {
+        while let Ok(evt) = self.ai_rx.try_recv() {
+            match evt {
+                AiEvent::Thinking => {
+                    // Spinner already shown via `ai_pending` flag in panel.
+                }
+                AiEvent::SqlGenerated(sql) => {
+                    self.tab_manager.set_active_ai_result(sql);
+                }
+                AiEvent::Error(msg) => {
+                    self.tab_manager.set_active_ai_error(msg);
+                }
+            }
         }
     }
 
@@ -488,6 +535,86 @@ impl PgClientApp {
                         let _ = self.config.save();
                         self.tab_manager.set_lang(Lang::Tr);
                         ui.close_menu();
+                    }
+                });
+                ui.separator();
+                ui.menu_button("AI", |ui| {
+                    // ── Provider selector ─────────────────────────────────────
+                    ui.label("Provider:");
+                    ui.horizontal(|ui| {
+                        for p in &["claude", "groq", "ollama", "openai"] {
+                            if ui.selectable_label(self.ai_draft.provider == *p, *p).clicked() {
+                                self.ai_draft.provider = p.to_string();
+                            }
+                        }
+                    });
+
+                    ui.add_space(4.0);
+
+                    // ── API Key (hidden for Ollama) ────────────────────────────
+                    let needs_key = self.ai_draft.provider != "ollama";
+                    if needs_key {
+                        ui.label("API Key:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.ai_draft.api_key)
+                                .desired_width(280.0)
+                                .password(true)
+                                .hint_text(match self.ai_draft.provider.as_str() {
+                                    "claude" => "sk-ant-...",
+                                    "groq"   => "gsk_...",
+                                    _        => "Bearer token",
+                                }),
+                        );
+                    }
+
+                    // ── Model override ────────────────────────────────────────
+                    ui.label("Model (blank = default):");
+                    let model_hint = self.ai_draft.effective_model().to_owned();
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ai_draft.model)
+                            .desired_width(280.0)
+                            .hint_text(model_hint),
+                    );
+
+                    // ── Base URL override (Ollama / OpenRouter / custom) ───────
+                    let url_hint = self.ai_draft.effective_base_url().to_owned();
+                    let show_url = self.ai_draft.provider != "claude";
+                    if show_url {
+                        ui.label("Base URL (blank = default):");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.ai_draft.base_url)
+                                .desired_width(280.0)
+                                .hint_text(url_hint),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            self.config.ai = self.ai_draft.clone();
+                            let _ = self.config.save();
+                            let _ = self.ai_tx.send(AiCommand::SetConfig(self.ai_draft.clone()));
+                            ui.close_menu();
+                        }
+                        if ui.button("Clear key").clicked() {
+                            self.ai_draft.api_key.clear();
+                            self.config.ai.api_key.clear();
+                            let _ = self.config.save();
+                            let _ = self.ai_tx.send(AiCommand::SetConfig(self.ai_draft.clone()));
+                            ui.close_menu();
+                        }
+                    });
+
+                    if self.config.ai.is_configured() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "✓ {} / {}",
+                                self.config.ai.provider,
+                                self.config.ai.effective_model()
+                            ))
+                            .color(egui::Color32::from_rgb(100, 200, 100))
+                            .small(),
+                        );
                     }
                 });
                 ui.separator();
@@ -728,6 +855,7 @@ impl eframe::App for PgClientApp {
 
         self.process_db_events();
         self.process_test_event();
+        self.process_ai_events();
 
         // Update window title with active connection's status.
         let title = self
@@ -989,8 +1117,21 @@ impl eframe::App for PgClientApp {
                 .iter()
                 .map(|c| (c.id, c.name.as_str(), &c.db_tx))
                 .collect();
-            self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n);
+            let ai_enabled = self.config.ai.is_configured();
+            self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n, ai_enabled);
         });
+
+        // ── Handle pending NL→SQL requests from the active panel ─────────────
+        if let Some(prompt) = self.tab_manager.take_active_nl_submit() {
+            // Two-step: fetch full live schema from DB, then fire AI.
+            if let Some(conn) = self.connections.get(self.active_conn) {
+                self.ai_schema_req_id += 1;
+                self.pending_ai_prompt = Some(prompt);
+                let _ = conn.db_tx.send(DbCommand::LoadFullSchemaForAi {
+                    request_id: self.ai_schema_req_id,
+                });
+            }
+        }
 
         // Dashboard refresh: if show_inline returned true (refresh button), reload
         // This is handled inside tab_manager.show() → dashboard.show_inline() which returns bool,
