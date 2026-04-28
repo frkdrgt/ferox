@@ -58,11 +58,34 @@ impl SuggestionKind {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Suggestion {
+    pub display: String,
+    pub insert: String,
+    pub kind: SuggestionKind,
+    pub hint: Option<String>,
+}
+
+fn table_alias(name: &str) -> String {
+    let parts: Vec<&str> = name.split('_').filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 1 {
+        name.chars().next()
+            .and_then(|c| c.to_lowercase().next())
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    } else {
+        parts.iter()
+            .filter_map(|p| p.chars().next())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+}
+
 // ── Autocomplete ──────────────────────────────────────────────────────────────
 
 pub struct Autocomplete {
     pub visible: bool,
-    pub suggestions: Vec<(String, SuggestionKind)>,
+    pub suggestions: Vec<Suggestion>,
     pub selected: usize,
     pub word_start: usize,
     pub current_word: String,
@@ -96,44 +119,59 @@ impl Autocomplete {
         self.word_start = word_start;
         self.current_word = word.to_owned();
 
-        if word.len() < 1 {
+        if word.is_empty() {
             self.visible = false;
             self.suggestions.clear();
             return;
         }
 
         let lower = word.to_lowercase();
-        let mut suggestions: Vec<(String, SuggestionKind)> = Vec::new();
+        let mut suggestions: Vec<Suggestion> = Vec::new();
 
         // Keywords
         for kw in SQL_KEYWORDS {
             if kw.to_lowercase().starts_with(&lower) {
-                suggestions.push((kw.to_string(), SuggestionKind::Keyword));
+                suggestions.push(Suggestion {
+                    display: kw.to_string(),
+                    insert: kw.to_string(),
+                    kind: SuggestionKind::Keyword,
+                    hint: None,
+                });
             }
         }
 
-        // Tables
+        // Tables — insert includes short alias
         for table in tables {
             if table.to_lowercase().starts_with(&lower) {
-                suggestions.push((table.clone(), SuggestionKind::Table));
+                let alias = table_alias(table);
+                suggestions.push(Suggestion {
+                    display: table.clone(),
+                    insert: format!("{} {}", table, alias),
+                    kind: SuggestionKind::Table,
+                    hint: Some(alias),
+                });
             }
         }
 
         // Columns
         for col in columns {
             if col.to_lowercase().starts_with(&lower) {
-                // Avoid duplicates with table list
-                if !suggestions.iter().any(|(s, _)| s == col) {
-                    suggestions.push((col.clone(), SuggestionKind::Column));
+                if !suggestions.iter().any(|s| s.display == *col) {
+                    suggestions.push(Suggestion {
+                        display: col.clone(),
+                        insert: col.clone(),
+                        kind: SuggestionKind::Column,
+                        hint: None,
+                    });
                 }
             }
         }
 
-        // Limit to 8 items, prefer exact prefix match at top
+        // Prefer exact prefix match at top, then alphabetical
         suggestions.sort_by(|a, b| {
-            let a_exact = a.0.to_lowercase() == lower;
-            let b_exact = b.0.to_lowercase() == lower;
-            b_exact.cmp(&a_exact).then(a.0.cmp(&b.0))
+            let a_exact = a.display.to_lowercase() == lower;
+            let b_exact = b.display.to_lowercase() == lower;
+            b_exact.cmp(&a_exact).then(a.display.cmp(&b.display))
         });
 
         if suggestions.is_empty() {
@@ -162,7 +200,7 @@ impl Autocomplete {
         if !self.is_visible() {
             return None;
         }
-        let result = self.suggestions.get(self.selected).map(|(s, _)| s.clone());
+        let result = self.suggestions.get(self.selected).map(|s| s.insert.clone());
         self.visible = false;
         self.suggestions.clear();
         result
@@ -190,7 +228,7 @@ impl Autocomplete {
             return None;
         }
 
-        let visible = self.suggestions.iter().take(8).cloned().collect::<Vec<_>>();
+        let visible: Vec<Suggestion> = self.suggestions.iter().take(8).cloned().collect();
         if visible.is_empty() {
             return None;
         }
@@ -207,8 +245,8 @@ impl Autocomplete {
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 70, 90)))
                     .inner_margin(egui::Margin::same(2.0))
                     .show(ui, |ui| {
-                        ui.set_min_width(220.0);
-                        for (i, (text, kind)) in visible.iter().enumerate() {
+                        ui.set_min_width(240.0);
+                        for (i, suggestion) in visible.iter().enumerate() {
                             let is_selected = i == self.selected;
 
                             let bg = if is_selected {
@@ -218,7 +256,7 @@ impl Autocomplete {
                             };
 
                             let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(ui.available_width().max(220.0), 20.0),
+                                egui::vec2(ui.available_width().max(240.0), 20.0),
                                 egui::Sense::click(),
                             );
 
@@ -238,16 +276,16 @@ impl Autocomplete {
                                 painter.text(
                                     rect.left_center() + egui::vec2(4.0, 0.0),
                                     egui::Align2::LEFT_CENTER,
-                                    kind.icon(),
+                                    suggestion.kind.icon(),
                                     egui::FontId::monospace(10.0),
-                                    kind.color(),
+                                    suggestion.kind.color(),
                                 );
 
-                                // Suggestion text
+                                // Display text
                                 painter.text(
                                     rect.left_center() + egui::vec2(18.0, 0.0),
                                     egui::Align2::LEFT_CENTER,
-                                    text,
+                                    &suggestion.display,
                                     egui::FontId::monospace(12.0),
                                     if is_selected {
                                         egui::Color32::WHITE
@@ -255,10 +293,21 @@ impl Autocomplete {
                                         egui::Color32::from_gray(200)
                                     },
                                 );
+
+                                // Alias hint on the right
+                                if let Some(hint) = &suggestion.hint {
+                                    painter.text(
+                                        rect.right_center() + egui::vec2(-6.0, 0.0),
+                                        egui::Align2::RIGHT_CENTER,
+                                        hint,
+                                        egui::FontId::monospace(10.0),
+                                        egui::Color32::from_gray(100),
+                                    );
+                                }
                             }
 
                             if resp.clicked() {
-                                accepted = Some(text.clone());
+                                accepted = Some(suggestion.insert.clone());
                             }
                         }
                     });

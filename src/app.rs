@@ -254,6 +254,10 @@ impl PgClientApp {
                     }
                     DbEvent::Tables { schema, tables } => {
                         self.connections[i].sidebar.set_tables(&schema, tables);
+                        // Preload all column names in one query for autocomplete
+                        let _ = self.connections[i].db_tx.send(DbCommand::LoadSchemaColumns {
+                            schema,
+                        });
                     }
                     DbEvent::TableDetails { schema, table, columns, indexes, foreign_keys } => {
                         self.connections[i].sidebar.set_table_details(
@@ -303,6 +307,9 @@ impl PgClientApp {
                     }
                     DbEvent::Functions { schema, functions } => {
                         self.connections[i].sidebar.set_functions(&schema, functions);
+                    }
+                    DbEvent::SchemaColumns { schema, columns } => {
+                        self.connections[i].sidebar.set_schema_columns(&schema, columns);
                     }
                     DbEvent::SchemaSnapshot { request_id, rows } => {
                         self.tab_manager.deliver_schema_snapshot(request_id, rows);
@@ -871,11 +878,13 @@ impl eframe::App for PgClientApp {
             .unwrap_or_else(|| "ferox".to_owned());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        // Update autocomplete completion data for each connection.
-        for conn in &self.connections {
-            let (tables, columns) = conn.sidebar.completion_data();
-            let conn_id = conn.id;
-            self.tab_manager.update_completion_data_for(conn_id, tables, columns);
+        // Rebuild autocomplete data only when sidebar schema/columns changed.
+        for conn in &mut self.connections {
+            if conn.sidebar.take_completion_dirty() {
+                let (tables, columns) = conn.sidebar.completion_data();
+                let conn_id = conn.id;
+                self.tab_manager.update_completion_data_for(conn_id, tables, columns);
+            }
         }
 
         // Dashboard load / refresh logic

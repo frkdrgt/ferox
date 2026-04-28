@@ -207,7 +207,11 @@ pub struct Sidebar {
     tables_loaded_at: HashMap<String, Instant>,
     expanded: HashMap<String, bool>,
     expanded_tables: HashMap<(String, String), bool>,
+    /// Per-table sub-section expand state: (schema, table) → [cols_open, idx_open, fk_open].
+    expanded_sections: HashMap<(String, String), [bool; 3]>,
     table_details: HashMap<(String, String), TableDetailCache>,
+    /// Column names per table loaded in bulk for autocomplete: schema → table → [col].
+    schema_columns: HashMap<String, HashMap<String, Vec<String>>>,
     filter: String,
     selected: Option<(String, String)>,
     /// Functions/procedures per schema (lazy-loaded alongside tables).
@@ -216,6 +220,8 @@ pub struct Sidebar {
     expanded_functions: HashMap<String, bool>,
     /// Schemas currently being refreshed in the background (stale data still shown).
     refreshing: std::collections::HashSet<String>,
+    /// Set when tables/columns change — triggers a single autocomplete rebuild.
+    completion_dirty: bool,
 }
 
 impl Sidebar {
@@ -225,11 +231,19 @@ impl Sidebar {
         self.tables_loaded_at.clear();
         self.expanded.clear();
         self.expanded_tables.clear();
+        self.expanded_sections.clear();
         self.table_details.clear();
+        self.schema_columns.clear();
         self.functions.clear();
         self.expanded_functions.clear();
         self.refreshing.clear();
         self.selected = None;
+        self.completion_dirty = true;
+    }
+
+    /// Returns true (and resets the flag) when completion data needs rebuilding.
+    pub fn take_completion_dirty(&mut self) -> bool {
+        std::mem::replace(&mut self.completion_dirty, false)
     }
 
     pub fn set_functions(&mut self, schema: &str, functions: Vec<FunctionInfo>) {
@@ -244,6 +258,7 @@ impl Sidebar {
         self.tables.insert(schema.to_owned(), tables);
         self.tables_loaded_at.insert(schema.to_owned(), Instant::now());
         self.refreshing.remove(schema);
+        self.completion_dirty = true;
     }
 
     pub fn schema_names(&self) -> Vec<String> {
@@ -282,25 +297,39 @@ impl Sidebar {
         lines.join("\n")
     }
 
+    pub fn set_schema_columns(&mut self, schema: &str, columns: HashMap<String, Vec<String>>) {
+        self.schema_columns.insert(schema.to_owned(), columns);
+        self.completion_dirty = true;
+    }
+
     /// Returns (table_names, column_names) for autocomplete.
     pub fn completion_data(&self) -> (Vec<String>, Vec<String>) {
         let mut tables = Vec::new();
-        let mut columns = Vec::new();
+        let mut col_set: std::collections::HashSet<String> = Default::default();
+
         for schema_tables in self.tables.values() {
             for t in schema_tables {
                 tables.push(t.name.clone());
                 let key = (t.schema.clone(), t.name.clone());
                 if let Some(details) = self.table_details.get(&key) {
                     for col in &details.columns {
-                        if !columns.contains(&col.name) {
-                            columns.push(col.name.clone());
-                        }
+                        col_set.insert(col.name.clone());
                     }
                 }
             }
         }
+
+        // Bulk-loaded column names (faster path — populated on schema expand)
+        for table_map in self.schema_columns.values() {
+            for cols in table_map.values() {
+                for col in cols {
+                    col_set.insert(col.clone());
+                }
+            }
+        }
+
         tables.dedup();
-        (tables, columns)
+        (tables, col_set.into_iter().collect())
     }
 
     /// Returns all known tables with their loaded column names,
@@ -339,6 +368,7 @@ impl Sidebar {
             (schema.to_owned(), table.to_owned()),
             TableDetailCache { columns, indexes, foreign_keys, loaded: true },
         );
+        self.completion_dirty = true;
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> Vec<SidebarAction> {
@@ -738,9 +768,33 @@ impl Sidebar {
 
                                 // Sub-items when expanded
                                 if is_table_expanded {
-                                    ui.indent(egui::Id::new(&key), |ui| {
-                                        render_table_details(ui, &details);
-                                    });
+                                    // Single lookup: [cols_open, idx_open, fk_open]
+                                    let [sec_cols, sec_idx, sec_fk] =
+                                        *self.expanded_sections.get(&key).unwrap_or(&[false; 3]);
+
+                                    let id_cols = egui::Id::new((&key.0, &key.1, "sec_cols"));
+                                    let id_idx  = egui::Id::new((&key.0, &key.1, "sec_idx"));
+                                    let id_fk   = egui::Id::new((&key.0, &key.1, "sec_fk"));
+
+                                    let toggled = ui.indent(egui::Id::new(&key), |ui| {
+                                        render_table_details(
+                                            ui, &details,
+                                            sec_cols, sec_idx, sec_fk,
+                                            id_cols, id_idx, id_fk,
+                                        )
+                                    }).inner;
+
+                                    for sec_str in toggled {
+                                        let idx = match sec_str.as_str() {
+                                            "cols" => 0,
+                                            "idx"  => 1,
+                                            _      => 2,
+                                        };
+                                        let secs = self.expanded_sections
+                                            .entry(key.clone())
+                                            .or_insert([false; 3]);
+                                        secs[idx] = !secs[idx];
+                                    }
                                 }
                             }
                         }
@@ -954,79 +1008,134 @@ fn render_table_row_ui(
     resp
 }
 
-fn render_table_details(ui: &mut egui::Ui, details: &Option<TableDetailCache>) {
+fn render_table_details(
+    ui: &mut egui::Ui,
+    details: &Option<TableDetailCache>,
+    sec_cols: bool,
+    sec_idx: bool,
+    sec_fk: bool,
+    id_cols: egui::Id,
+    id_idx: egui::Id,
+    id_fk: egui::Id,
+) -> Vec<String> {
+    let mut toggled: Vec<String> = Vec::new();
+
     let Some(d) = details else {
-        return;
+        return toggled;
     };
 
     if !d.loaded {
         ui.label(RichText::new("⟳ Loading…").small().color(Color32::from_gray(90)));
-        return;
+        return toggled;
     }
 
-    // Columns
+    // Columns section
     if !d.columns.is_empty() {
-        ui.label(
-            RichText::new("COLUMNS")
-                .small()
-                .strong()
-                .color(COLOR_KIND_HEADER),
-        );
-        for col in &d.columns {
-            let not_null = if !col.is_nullable { " !" } else { "" };
-            ui.label(
-                RichText::new(format!("  {} : {}{}", col.name, col.data_type, not_null))
-                    .small()
-                    .monospace()
-                    .color(COLOR_SUBITEM),
-            );
+        let resp = render_detail_section_header(ui, "Columns", d.columns.len(), sec_cols, id_cols);
+        if resp.clicked() { toggled.push("cols".to_owned()); }
+        if sec_cols {
+            ui.indent(id_cols.with("content"), |ui| {
+                for col in &d.columns {
+                    ui.label(
+                        RichText::new(format!("{} : {}", col.name, col.data_type))
+                            .small()
+                            .monospace()
+                            .color(COLOR_SUBITEM),
+                    );
+                }
+            });
         }
     }
 
-    // Indexes
+    // Indexes section
     if !d.indexes.is_empty() {
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("INDEXES")
-                .small()
-                .strong()
-                .color(COLOR_KIND_HEADER),
-        );
-        for idx in &d.indexes {
-            let unique = if idx.is_unique { " ◈" } else { "" };
-            ui.label(
-                RichText::new(format!("  {}{}", idx.name, unique))
-                    .small()
-                    .monospace()
-                    .color(COLOR_INDEX),
-            )
-            .on_hover_text(&idx.definition);
+        let resp = render_detail_section_header(ui, "Indexes", d.indexes.len(), sec_idx, id_idx);
+        if resp.clicked() { toggled.push("idx".to_owned()); }
+        if sec_idx {
+            ui.indent(id_idx.with("content"), |ui| {
+                for idx in &d.indexes {
+                    let unique = if idx.is_unique { " ◈" } else { "" };
+                    ui.label(
+                        RichText::new(format!("{}{}", idx.name, unique))
+                            .small()
+                            .monospace()
+                            .color(COLOR_INDEX),
+                    )
+                    .on_hover_text(&idx.definition);
+                }
+            });
         }
     }
 
-    // Foreign Keys
+    // Foreign Keys section
     if !d.foreign_keys.is_empty() {
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("FOREIGN KEYS")
-                .small()
-                .strong()
-                .color(COLOR_KIND_HEADER),
-        );
-        for fk in &d.foreign_keys {
-            ui.label(
-                RichText::new(format!("  {}", fk.name))
-                    .small()
-                    .monospace()
-                    .color(COLOR_FK),
-            )
-            .on_hover_text(&fk.definition);
+        let resp = render_detail_section_header(ui, "Foreign Keys", d.foreign_keys.len(), sec_fk, id_fk);
+        if resp.clicked() { toggled.push("fk".to_owned()); }
+        if sec_fk {
+            ui.indent(id_fk.with("content"), |ui| {
+                for fk in &d.foreign_keys {
+                    ui.label(
+                        RichText::new(&fk.name)
+                            .small()
+                            .monospace()
+                            .color(COLOR_FK),
+                    )
+                    .on_hover_text(&fk.definition);
+                }
+            });
         }
     }
 
     if d.columns.is_empty() && d.indexes.is_empty() && d.foreign_keys.is_empty() {
         ui.label(RichText::new("(empty)").small().color(Color32::from_gray(70)));
     }
+
+    toggled
+}
+
+fn render_detail_section_header(
+    ui: &mut egui::Ui,
+    label: &str,
+    count: usize,
+    expanded: bool,
+    id: egui::Id,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    // Allocate rect without sense, then interact with a stable ID
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(available_w, 16.0), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let bg = if resp.hovered() { Color32::from_rgb(55, 59, 63) } else { Color32::TRANSPARENT };
+        painter.rect_filled(rect, 2.0, bg);
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        painter.text(
+            rect.left_center() + Vec2::new(2.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            arrow,
+            egui::FontId::proportional(8.5),
+            Color32::from_gray(100),
+        );
+        painter.text(
+            rect.left_center() + Vec2::new(12.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(10.0),
+            Color32::from_rgb(130, 140, 150),
+        );
+        let badge = format!("{count}");
+        painter.text(
+            rect.right_center() + Vec2::new(-4.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            &badge,
+            egui::FontId::proportional(9.0),
+            Color32::from_gray(90),
+        );
+    }
+
+    resp
 }
 
 /// Like `render_kind_header` but clickable (toggles expand) and shows an arrow.

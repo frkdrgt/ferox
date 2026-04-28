@@ -5,6 +5,8 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
+use std::collections::HashMap;
+
 use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
@@ -43,6 +45,8 @@ pub enum DbCommand {
     LoadSchemaSnapshot { schema: String, request_id: u64 },
     /// Fetch full schema context for AI (all user schemas, tables, columns).
     LoadFullSchemaForAi { request_id: u64 },
+    /// Load all column names for a schema in one query (for autocomplete preload).
+    LoadSchemaColumns { schema: String },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -84,6 +88,8 @@ pub enum DbEvent {
     SchemaSnapshot { request_id: u64, rows: Vec<(String, String, String)> },
     /// Full schema context string for AI NL→SQL.
     AiSchemaReady { request_id: u64, context: String },
+    /// All column names per table for a schema (autocomplete preload).
+    SchemaColumns { schema: String, columns: HashMap<String, Vec<String>> },
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -184,6 +190,14 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             .await
                             .unwrap_or_default();
                         let _ = evt_tx.send(DbEvent::Functions { schema, functions });
+                    }
+                }
+            }
+
+            DbCommand::LoadSchemaColumns { schema } => {
+                if let Some(c) = &client {
+                    if let Ok(columns) = metadata::load_schema_columns(c, &schema).await {
+                        let _ = evt_tx.send(DbEvent::SchemaColumns { schema, columns });
                     }
                 }
             }

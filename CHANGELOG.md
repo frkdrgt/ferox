@@ -1,6 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — 2026-04-28
+
+### Added
+- **Sidebar tree sub-sections** — clicking a table now expands collapsible sub-sections (Columns, Indexes, Foreign Keys) with item counts; sections are independently toggled and default to collapsed
+- **Autocomplete without schema expand** — on schema expand a single `information_schema.columns` query preloads all column names for the schema; columns are immediately available in the SQL editor autocomplete without needing to manually expand each table
+- **Table alias suggestions** — autocomplete appends a short alias derived from the table name (e.g. `tenant_records → tr`, `audit_log → al`); alias hint is shown on the right side of the popup; accepting inserts `table_name alias` ready to use
+
+### Changed
+- Section header click detection uses `ui.interact` with stable per-table IDs instead of auto-generated egui IDs, fixing a first-click miss caused by ID drift between frames
+
+### Performance
+- `completion_data()` and `update_completion_data_for()` now run only when sidebar data actually changes (dirty flag on `set_tables` / `set_table_details` / `set_schema_columns`), eliminating the per-frame HashSet build and Vec clone across all tabs
+- `expanded_sections` key changed from `HashMap<(String,String,String), bool>` to `HashMap<(String,String), [bool;3]>` — reduces 3 HashMap lookups and 9 String clones to 1 lookup and 0 clones per expanded table per frame
+
+---
+
+## [0.2.6]— 2026-04-21
 
 ### Added
 - **Multi-statement tabs** — when multiple `;`-separated SELECT statements are run, each result opens in its own tab instead of only showing the last one

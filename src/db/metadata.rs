@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use tokio_postgres::Client;
 
@@ -561,6 +563,28 @@ pub async fn load_er_diagram(client: &Client, schema: &str) -> Result<Vec<ErTabl
         });
     }
     Ok(result)
+}
+
+pub async fn load_schema_columns(
+    client: &Client,
+    schema: &str,
+) -> Result<HashMap<String, Vec<String>>> {
+    let rows = client
+        .query(
+            "SELECT table_name, column_name
+             FROM information_schema.columns
+             WHERE table_schema = $1
+             ORDER BY table_name, ordinal_position",
+            &[&schema],
+        )
+        .await?;
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for row in rows {
+        let table: String = row.get(0);
+        let col: String = row.get(1);
+        map.entry(table).or_default().push(col);
+    }
+    Ok(map)
 }
 
 pub async fn load_columns(
