@@ -6,9 +6,11 @@ use egui::{Color32, RichText, Sense};
 use crate::db::metadata::{ConnInfo, ErTableInfo, IndexStat, TableStat};
 use crate::db::{DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::i18n::{I18n, Lang};
 use crate::ui::dashboard::Dashboard;
 use crate::ui::er_diagram::ErDiagram;
 use crate::ui::query_panel::QueryPanel;
+use crate::ui::schema_diff::{SchemaDiff, SchemaRows};
 
 // ── Tab content ───────────────────────────────────────────────────────────────
 
@@ -16,6 +18,7 @@ enum TabContent {
     Query(QueryPanel),
     Dashboard,
     ErDiagram(ErDiagram),
+    SchemaDiff(SchemaDiff),
 }
 
 // ── Tab ───────────────────────────────────────────────────────────────────────
@@ -39,6 +42,14 @@ impl Tab {
     fn panel_mut(&mut self) -> Option<&mut QueryPanel> {
         match &mut self.content {
             TabContent::Query(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn schema_diff_mut(&mut self) -> Option<&mut SchemaDiff> {
+        match &mut self.content {
+            TabContent::SchemaDiff(d) => Some(d),
             _ => None,
         }
     }
@@ -152,6 +163,32 @@ impl TabManager {
         self.active = self.tabs.len() - 1;
     }
 
+    /// Open a new Schema Diff tab.
+    pub fn open_schema_diff(&mut self, conn_id_a: usize, conn_id_b: usize) {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            id,
+            title: "⊕ Schema Diff".to_owned(),
+            content: TabContent::SchemaDiff(SchemaDiff::new(conn_id_a, conn_id_b)),
+            conn_id: conn_id_a,
+        });
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Route a schema snapshot to the SchemaDiff tab that requested it.
+    pub fn deliver_schema_snapshot(&mut self, request_id: u64, rows: SchemaRows) {
+        // Find the tab that owns this request_id, then deliver.
+        let idx = self.tabs.iter().position(|t| {
+            matches!(&t.content, TabContent::SchemaDiff(d) if d.has_request(request_id))
+        });
+        if let Some(i) = idx {
+            if let TabContent::SchemaDiff(d) = &mut self.tabs[i].content {
+                d.deliver(request_id, rows);
+            }
+        }
+    }
+
     /// Returns (conn_id, schema) if the active tab is an ER diagram that needs loading.
     pub fn er_diagram_needs_load(&self) -> Option<(usize, String)> {
         let tab = self.tabs.get(self.active)?;
@@ -199,6 +236,29 @@ impl TabManager {
             } else if rt > idx {
                 self.running_tabs.insert(conn_id, rt - 1);
             }
+        }
+
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        }
+    }
+
+    /// Close all tabs that belong to a given connection.
+    /// Always leaves at least one tab.
+    pub fn close_tabs_for_conn(&mut self, conn_id: usize) {
+        self.tabs.retain(|t| t.conn_id != conn_id);
+        self.running_tabs.remove(&conn_id);
+
+        if self.tabs.is_empty() {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.tabs.push(Tab {
+                id,
+                title: format!("Query {}", self.next_num),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id: 0,
+            });
+            self.next_num += 1;
         }
 
         if self.active >= self.tabs.len() {
@@ -314,6 +374,39 @@ impl TabManager {
         }
     }
 
+    /// Route multi-statement results: first result → running tab, rest → new tabs.
+    pub fn set_multi_results_for(&mut self, conn_id: usize, results: Vec<QueryResult>) {
+        let primary_idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);
+        let saved_active = self.active;
+        let mut results_iter = results.into_iter();
+
+        if let Some(first) = results_iter.next() {
+            if let Some(t) = self.tabs.get_mut(primary_idx) {
+                if let Some(p) = t.panel_mut() {
+                    p.set_result(first);
+                }
+            }
+        }
+
+        for result in results_iter {
+            let id = self.next_id;
+            self.next_id += 1;
+            let num = self.next_num;
+            self.next_num += 1;
+            self.tabs.push(Tab {
+                id,
+                title: format!("Query {num}"),
+                content: TabContent::Query(QueryPanel::default()),
+                conn_id,
+            });
+            if let Some(p) = self.tabs.last_mut().and_then(|t| t.panel_mut()) {
+                p.set_result(result);
+            }
+        }
+
+        self.active = saved_active;
+    }
+
     /// Route a query error to the tab that started the query for this conn_id.
     pub fn set_error_for(&mut self, conn_id: usize, msg: String) {
         let idx = self.running_tabs.remove(&conn_id).unwrap_or(self.active);
@@ -340,6 +433,25 @@ impl TabManager {
             if let Some(p) = t.panel_mut() {
                 p.set_export_done(path);
             }
+        }
+    }
+
+    /// Take the pending NL prompt from the active panel (if any).
+    pub fn take_active_nl_submit(&mut self) -> Option<String> {
+        self.active_panel_mut()?.nl_submit.take()
+    }
+
+    /// Deliver AI-generated SQL to the active panel.
+    pub fn set_active_ai_result(&mut self, sql: String) {
+        if let Some(p) = self.active_panel_mut() {
+            p.set_ai_result(sql);
+        }
+    }
+
+    /// Deliver AI error to the active panel.
+    pub fn set_active_ai_error(&mut self, msg: String) {
+        if let Some(p) = self.active_panel_mut() {
+            p.set_ai_error(msg);
         }
     }
 
@@ -406,6 +518,15 @@ impl TabManager {
         }
     }
 
+    /// Propagate language change to all Query panels.
+    pub fn set_lang(&mut self, lang: Lang) {
+        for t in &mut self.tabs {
+            if let Some(p) = t.panel_mut() {
+                p.lang = lang;
+            }
+        }
+    }
+
     pub fn update_completion_data_for(&mut self, conn_id: usize, tables: Vec<String>, columns: Vec<String>) {
         for t in &mut self.tabs {
             if t.conn_id == conn_id {
@@ -430,12 +551,14 @@ impl TabManager {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    /// `conns` is a slice of (conn_id, db_tx) pairs.
+    /// `conns` is a slice of (conn_id, name, db_tx) triples.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        conns: &[(usize, &Sender<DbCommand>)],
+        conns: &[(usize, &str, &Sender<DbCommand>)],
         history: &mut QueryHistory,
+        i18n: &I18n,
+        ai_enabled: bool,
     ) {
         // ── Keyboard shortcuts ────────────────────────────────────────────────
         let active_conn_id = self.active_tab_conn_id();
@@ -458,7 +581,7 @@ impl TabManager {
         }
 
         // ── Tab bar ───────────────────────────────────────────────────────────
-        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui);
+        let (to_select, to_close, want_new, ctx_action) = self.render_tab_bar(ui, conns, i18n);
         if let Some(idx) = to_select {
             self.active = idx;
         }
@@ -480,19 +603,19 @@ impl TabManager {
         let tab_kind = self.tabs.get(active_idx).map(|t| match &t.content {
             TabContent::Dashboard => 0u8,
             TabContent::ErDiagram(_) => 1u8,
+            TabContent::SchemaDiff(_) => 3u8,
             TabContent::Query(_) => 2u8,
         });
 
         if tab_kind == Some(0) {
-            let (refresh, kill_pid) = self.dashboard.show_inline(ui);
+            let (refresh, kill_pid) = self.dashboard.show_inline(ui, i18n);
             if refresh {
                 self.dashboard.set_loading();
             }
             if let Some(pid) = kill_pid {
                 if let Some(conn_id) = self.dashboard_conn_id() {
-                    if let Some(tx) = conns.iter().find(|(id, _)| *id == conn_id).map(|(_, tx)| *tx) {
+                    if let Some(tx) = conns.iter().find(|(id, _, _)| *id == conn_id).map(|(_, _, tx)| *tx) {
                         let _ = tx.send(crate::db::DbCommand::KillConnection { pid });
-                        // Reload dashboard after a short delay — handled by Empty state
                         self.dashboard.set_loading();
                     }
                 }
@@ -500,33 +623,48 @@ impl TabManager {
         } else if tab_kind == Some(1) {
             if let Some(tab) = self.tabs.get_mut(active_idx) {
                 if let TabContent::ErDiagram(d) = &mut tab.content {
-                    d.show(ui);
+                    d.show(ui, i18n);
                 }
             }
-        } else if let Some(tab) = self.tabs.get(active_idx) {
-            let tab_conn_id = tab.conn_id;
-            // Find the db_tx for this tab's conn_id
-            let db_tx_opt = conns.iter().find(|(id, _)| *id == tab_conn_id).map(|(_, tx)| *tx);
+        } else if tab_kind == Some(3) {
+            if let Some(tab) = self.tabs.get_mut(active_idx) {
+                if let TabContent::SchemaDiff(d) = &mut tab.content {
+                    d.show(ui, conns, i18n);
+                }
+            }
+        } else {
+            // Auto-heal: if this tab's conn_id is orphaned but exactly one connection
+            // exists, silently adopt it so the editor stays usable.
+            if active_idx < self.tabs.len() {
+                let current = self.tabs[active_idx].conn_id;
+                if !conns.iter().any(|(id, _, _)| *id == current) && conns.len() == 1 {
+                    self.tabs[active_idx].conn_id = conns[0].0;
+                }
+            }
 
-            if let Some(db_tx) = db_tx_opt {
-                // Detect if the panel starts a query from within its own show()
-                let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
-                if let Some(p) = self.tabs[active_idx].panel_mut() {
-                    p.show(ui, db_tx, history);
+            if let Some(tab) = self.tabs.get(active_idx) {
+                let tab_conn_id = tab.conn_id;
+                let db_tx_opt = conns.iter().find(|(id, _, _)| *id == tab_conn_id).map(|(_, _, tx)| *tx);
+
+                if let Some(db_tx) = db_tx_opt {
+                    let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                    if let Some(p) = self.tabs[active_idx].panel_mut() {
+                        p.show(ui, db_tx, history, i18n, ai_enabled);
+                    }
+                    let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
+                    if !was_running && is_running_now {
+                        self.running_tabs.insert(tab_conn_id, active_idx);
+                    }
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            egui::RichText::new(i18n.lbl_no_connection_available())
+                                .color(egui::Color32::GRAY)
+                                .italics(),
+                        );
+                    });
                 }
-                let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
-                if !was_running && is_running_now {
-                    self.running_tabs.insert(tab_conn_id, active_idx);
-                }
-            } else {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(
-                        egui::RichText::new("Connection not available")
-                            .color(egui::Color32::GRAY)
-                            .italics(),
-                    );
-                });
             }
         }
     }
@@ -536,6 +674,8 @@ impl TabManager {
     fn render_tab_bar(
         &self,
         ui: &mut egui::Ui,
+        conns: &[(usize, &str, &Sender<DbCommand>)],
+        i18n: &I18n,
     ) -> (Option<usize>, Option<usize>, bool, Option<TabContextAction>) {
         let mut to_select: Option<usize> = None;
         let mut to_close: Option<usize> = None;
@@ -545,16 +685,33 @@ impl TabManager {
         let tab_count = self.tabs.len();
 
         // Pre-compute display data (including stable id) to avoid capturing `self` in closures.
-        let tab_data: Vec<(usize, usize, String, bool, bool, bool)> = self
+        // Tuple: (tab_idx, tab_id, title, is_active, is_running, is_dashboard, conn_id)
+        let tab_data: Vec<(usize, usize, String, bool, bool, bool, usize)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
                 let is_running = self.running_tabs.values().any(|&rt| rt == i);
                 let is_dashboard = matches!(t.content, TabContent::Dashboard | TabContent::ErDiagram(_));
-                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard)
+                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard, t.conn_id)
             })
             .collect();
+
+        // Show connection badges when multiple distinct connections have tabs.
+        let unique_conn_count = {
+            let mut seen = std::collections::HashSet::new();
+            for t in &self.tabs { seen.insert(t.conn_id); }
+            seen.len()
+        };
+        let show_badge = unique_conn_count > 1;
+
+        // Short connection name: "db" part of "db@host", truncated to 10 chars.
+        let short_conn = |conn_id: usize| -> String {
+            conns.iter()
+                .find(|(id, _, _)| *id == conn_id)
+                .map(|(_, name, _)| truncate(name.split('@').next().unwrap_or(name), 10))
+                .unwrap_or_default()
+        };
 
         // Borrow the painter before entering child UIs.
         let painter = ui.painter().clone();
@@ -562,9 +719,9 @@ impl TabManager {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
 
-            for (i, tab_id, title, is_active, is_running, is_dashboard) in &tab_data {
+            for (i, tab_id, title, is_active, is_running, is_dashboard, tab_conn_id) in &tab_data {
                 // Truncate long titles.
-                let short: String = truncate(title, 24);
+                let short: String = truncate(title, 20);
                 let display = if *is_running {
                     format!("⏳ {short}")
                 } else {
@@ -604,6 +761,18 @@ impl TabManager {
                         ui.push_id(*tab_id, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.horizontal(|ui| {
+                            // Connection badge — shown only when multiple connections are open.
+                            if show_badge && !is_dashboard {
+                                let badge = short_conn(*tab_conn_id);
+                                if !badge.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("{badge} ·"))
+                                            .size(10.0)
+                                            .color(Color32::from_gray(100)),
+                                    );
+                                }
+                            }
+
                             // Label handles both left-click (select) and right-click (menu).
                             let tab_i = *i;
                             let label_r = ui.add(
@@ -617,17 +786,17 @@ impl TabManager {
                             }
                             label_r.context_menu(|ui| {
                                 if tab_count > 1 {
-                                    if ui.button("Close tab").clicked() {
+                                    if ui.button(i18n.tab_close()).clicked() {
                                         to_close = Some(tab_i);
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("Close other tabs").clicked() {
+                                    if ui.button(i18n.tab_close_others()).clicked() {
                                         ctx_action = Some(TabContextAction::CloseOthers(tab_i));
                                         ui.close_menu();
                                     }
                                 }
-                                if ui.button("Close all tabs").clicked() {
+                                if ui.button(i18n.tab_close_all()).clicked() {
                                     ctx_action = Some(TabContextAction::CloseAll);
                                     ui.close_menu();
                                 }

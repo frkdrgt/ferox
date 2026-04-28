@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio_postgres::NoTls;
 
 use crate::config::{ConnectionProfile, SslMode};
-use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, IndexInfo, IndexStat, TableInfo, TableStat};
+use crate::db::metadata::{self, ColumnInfo, ConnInfo, ErTableInfo, ForeignKeyInfo, FunctionInfo, IndexInfo, IndexStat, TableInfo, TableStat};
 use crate::db::query::{parse_text_cell, QueryResult};
 
 /// Commands sent from the UI thread → DB worker.
@@ -33,6 +33,16 @@ pub enum DbCommand {
     Rollback,
     /// Terminate a backend process by PID (pg_terminate_backend).
     KillConnection { pid: String },
+    /// Test a connection profile without storing the client.
+    TestConnection(ConnectionProfile),
+    /// Execute multiple SQL statements individually; each gets its own QueryResult.
+    ExecuteMulti(Vec<String>),
+    /// Load functions/procedures for a schema.
+    LoadFunctions { schema: String },
+    /// Load (table, column, udt_name) snapshot for schema diff.
+    LoadSchemaSnapshot { schema: String, request_id: u64 },
+    /// Fetch full schema context for AI (all user schemas, tables, columns).
+    LoadFullSchemaForAi { request_id: u64 },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -64,6 +74,16 @@ pub enum DbEvent {
         index_stats: Vec<IndexStat>,
     },
     ErDiagramData { schema: String, tables: Vec<ErTableInfo> },
+    /// Result of a TestConnection command.
+    TestResult { success: bool, message: String },
+    /// Results for each statement in an ExecuteMulti command (one per statement).
+    MultiQueryResults(Vec<QueryResult>),
+    /// Functions/procedures loaded for a schema.
+    Functions { schema: String, functions: Vec<FunctionInfo> },
+    /// Schema snapshot rows for diff (table, column, udt_name).
+    SchemaSnapshot { request_id: u64, rows: Vec<(String, String, String)> },
+    /// Full schema context string for AI NL→SQL.
+    AiSchemaReady { request_id: u64, context: String },
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -90,6 +110,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
 
     let mut client: Option<tokio_postgres::Client> = None;
     let mut cancel_handle: Option<tokio_postgres::CancelToken> = None;
+    let mut last_profile: Option<ConnectionProfile> = None;
 
     // Wrap cmd_rx in Arc<Mutex> so we can move it into spawn_blocking
     let cmd_rx = Arc::new(Mutex::new(cmd_rx));
@@ -110,6 +131,7 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                         let database = profile.database.clone();
                         cancel_handle = Some(cancel);
                         client = Some(c);
+                        last_profile = Some(profile);
                         let _ = evt_tx.send(DbEvent::Connected { host, database });
                     }
                     Err(e) => {
@@ -125,71 +147,93 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
             }
 
             DbCommand::LoadSchemas => {
-                if let Some(c) = &client {
-                    match metadata::load_schemas(c).await {
-                        Ok(schemas) => {
-                            let _ = evt_tx.send(DbEvent::Schemas(schemas));
-                        }
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        match metadata::load_schemas(c).await {
+                            Ok(schemas) => {
+                                let _ = evt_tx.send(DbEvent::Schemas(schemas));
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            }
                         }
                     }
                 }
             }
 
             DbCommand::LoadTables { schema } => {
-                if let Some(c) = &client {
-                    match metadata::load_tables(c, &schema).await {
-                        Ok(tables) => {
-                            let _ = evt_tx.send(DbEvent::Tables { schema, tables });
-                        }
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        match metadata::load_tables(c, &schema).await {
+                            Ok(tables) => {
+                                let _ = evt_tx.send(DbEvent::Tables { schema, tables });
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            }
                         }
                     }
                 }
             }
 
+            DbCommand::LoadFunctions { schema } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        // Silently return empty on older PG versions that don't have prokind.
+                        let functions = metadata::load_functions(c, &schema)
+                            .await
+                            .unwrap_or_default();
+                        let _ = evt_tx.send(DbEvent::Functions { schema, functions });
+                    }
+                }
+            }
+
             DbCommand::LoadDetails { schema, table } => {
-                if let Some(c) = &client {
-                    let columns = metadata::load_columns(c, &schema, &table)
-                        .await
-                        .unwrap_or_default();
-                    let indexes = metadata::load_indexes(c, &schema, &table)
-                        .await
-                        .unwrap_or_default();
-                    let foreign_keys = metadata::load_foreign_keys(c, &schema, &table)
-                        .await
-                        .unwrap_or_default();
-                    let _ = evt_tx.send(DbEvent::TableDetails {
-                        schema,
-                        table,
-                        columns,
-                        indexes,
-                        foreign_keys,
-                    });
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let columns = metadata::load_columns(c, &schema, &table)
+                            .await
+                            .unwrap_or_default();
+                        let indexes = metadata::load_indexes(c, &schema, &table)
+                            .await
+                            .unwrap_or_default();
+                        let foreign_keys = metadata::load_foreign_keys(c, &schema, &table)
+                            .await
+                            .unwrap_or_default();
+                        let _ = evt_tx.send(DbEvent::TableDetails {
+                            schema,
+                            table,
+                            columns,
+                            indexes,
+                            foreign_keys,
+                        });
+                    }
                 }
             }
 
             DbCommand::LoadPrimaryKey { schema, table } => {
-                if let Some(c) = &client {
-                    let columns = metadata::load_primary_key(c, &schema, &table)
-                        .await
-                        .unwrap_or_default();
-                    let _ = evt_tx.send(DbEvent::PrimaryKey { schema, table, columns });
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let columns = metadata::load_primary_key(c, &schema, &table)
+                            .await
+                            .unwrap_or_default();
+                        let _ = evt_tx.send(DbEvent::PrimaryKey { schema, table, columns });
+                    }
                 }
             }
 
             DbCommand::Execute(sql) => {
-                if let Some(c) = &mut client {
-                    let start = Instant::now();
-                    match execute_query(c, &sql).await {
-                        Ok(mut result) => {
-                            result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-                            let _ = evt_tx.send(DbEvent::QueryResult(result));
-                        }
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        let start = Instant::now();
+                        match execute_query(c, &sql).await {
+                            Ok(mut result) => {
+                                result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                let _ = evt_tx.send(DbEvent::QueryResult(result));
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            }
                         }
                     }
                 } else {
@@ -198,14 +242,16 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
             }
 
             DbCommand::ExecuteDdl(sql) => {
-                if let Some(c) = &mut client {
-                    match c.execute(sql.as_str(), &[]).await {
-                        Ok(_) => {
-                            let _ = evt_tx.send(DbEvent::DdlDone);
-                        }
-                        Err(e) => {
-                            let err = anyhow::anyhow!(e);
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&err)));
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        match c.execute(sql.as_str(), &[]).await {
+                            Ok(_) => {
+                                let _ = evt_tx.send(DbEvent::DdlDone);
+                            }
+                            Err(e) => {
+                                let err = anyhow::anyhow!(e);
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&err)));
+                            }
                         }
                     }
                 } else {
@@ -222,73 +268,81 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
             }
 
             DbCommand::ExportCsv { sql, path } => {
-                if let Some(c) = &mut client {
-                    match execute_query(c, &sql).await {
-                        Ok(result) => match export_csv(&result, &path) {
-                            Ok(_) => {
-                                let _ = evt_tx.send(DbEvent::ExportDone(path));
-                            }
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        match execute_query(c, &sql).await {
+                            Ok(result) => match export_csv(&result, &path) {
+                                Ok(_) => {
+                                    let _ = evt_tx.send(DbEvent::ExportDone(path));
+                                }
+                                Err(e) => {
+                                    let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                                }
+                            },
                             Err(e) => {
-                                let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                             }
-                        },
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
             }
 
             DbCommand::ExportJson { sql, path } => {
-                if let Some(c) = &mut client {
-                    match execute_query(c, &sql).await {
-                        Ok(result) => match export_json(&result, &path) {
-                            Ok(_) => {
-                                let _ = evt_tx.send(DbEvent::ExportDone(path));
-                            }
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        match execute_query(c, &sql).await {
+                            Ok(result) => match export_json(&result, &path) {
+                                Ok(_) => {
+                                    let _ = evt_tx.send(DbEvent::ExportDone(path));
+                                }
+                                Err(e) => {
+                                    let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                                }
+                            },
                             Err(e) => {
-                                let _ = evt_tx.send(DbEvent::QueryError(e.to_string()));
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                             }
-                        },
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
                         }
                     }
                 }
             }
 
             DbCommand::LoadDashboard => {
-                if let Some(c) = &client {
-                    let ts = metadata::load_table_stats(c).await.unwrap_or_default();
-                    let conns = metadata::load_connections(c).await.unwrap_or_default();
-                    let idxs = metadata::load_index_stats(c).await.unwrap_or_default();
-                    let _ = evt_tx.send(DbEvent::DashboardData {
-                        table_stats: ts,
-                        connections: conns,
-                        index_stats: idxs,
-                    });
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let ts = metadata::load_table_stats(c).await.unwrap_or_default();
+                        let conns = metadata::load_connections(c).await.unwrap_or_default();
+                        let idxs = metadata::load_index_stats(c).await.unwrap_or_default();
+                        let _ = evt_tx.send(DbEvent::DashboardData {
+                            table_stats: ts,
+                            connections: conns,
+                            index_stats: idxs,
+                        });
+                    }
                 }
             }
 
             DbCommand::ExecuteSafe(sql) => {
-                if let Some(c) = &mut client {
-                    // Open transaction
-                    if let Err(e) = c.simple_query("BEGIN").await {
-                        let _ = evt_tx.send(DbEvent::QueryError(format!("BEGIN failed: {e}")));
-                        continue;
-                    }
-                    let start = Instant::now();
-                    match execute_query(c, &sql).await {
-                        Ok(mut result) => {
-                            result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-                            let _ = evt_tx.send(DbEvent::QueryResult(result));
-                            let _ = evt_tx.send(DbEvent::TransactionOpen);
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        // Open transaction
+                        if let Err(e) = c.simple_query("BEGIN").await {
+                            let _ = evt_tx.send(DbEvent::QueryError(format!("BEGIN failed: {e}")));
+                            continue;
                         }
-                        Err(e) => {
-                            // Auto-rollback on error to keep connection clean
-                            let _ = c.simple_query("ROLLBACK").await;
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
-                            let _ = evt_tx.send(DbEvent::TransactionClosed);
+                        let start = Instant::now();
+                        match execute_query(c, &sql).await {
+                            Ok(mut result) => {
+                                result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                let _ = evt_tx.send(DbEvent::QueryResult(result));
+                                let _ = evt_tx.send(DbEvent::TransactionOpen);
+                            }
+                            Err(e) => {
+                                // Auto-rollback on error to keep connection clean
+                                let _ = c.simple_query("ROLLBACK").await;
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                                let _ = evt_tx.send(DbEvent::TransactionClosed);
+                            }
                         }
                     }
                 } else {
@@ -315,27 +369,129 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
             }
 
             DbCommand::KillConnection { pid } => {
-                if let Some(c) = &client {
-                    let sql = format!("SELECT pg_terminate_backend({pid}::int)");
-                    match c.simple_query(&sql).await {
-                        Ok(_) => { let _ = evt_tx.send(DbEvent::KillDone(pid)); }
-                        Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let sql = format!("SELECT pg_terminate_backend({pid}::int)");
+                        match c.simple_query(&sql).await {
+                            Ok(_) => { let _ = evt_tx.send(DbEvent::KillDone(pid)); }
+                            Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(anyhow::anyhow!(e).to_string())); }
+                        }
+                    }
+                }
+            }
+
+            DbCommand::TestConnection(profile) => {
+                match connect_pg(&profile).await {
+                    Ok(_) => {
+                        let _ = evt_tx.send(DbEvent::TestResult { success: true, message: String::new() });
+                    }
+                    Err(e) => {
+                        let _ = evt_tx.send(DbEvent::TestResult { success: false, message: fmt_pg_error(&e) });
+                    }
+                }
+            }
+
+            DbCommand::ExecuteMulti(stmts) => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        let mut results: Vec<QueryResult> = Vec::with_capacity(stmts.len());
+                        let mut exec_error: Option<String> = None;
+                        for stmt in &stmts {
+                            let start = Instant::now();
+                            match execute_query(c, stmt).await {
+                                Ok(mut r) => {
+                                    r.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+                                    results.push(r);
+                                }
+                                Err(e) => {
+                                    exec_error = Some(fmt_pg_error(&e));
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = evt_tx.send(DbEvent::MultiQueryResults(results));
+                        if let Some(e) = exec_error {
+                            let _ = evt_tx.send(DbEvent::QueryError(e));
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::QueryError("Not connected".into()));
+                }
+            }
+
+
+            DbCommand::LoadSchemaSnapshot { schema, request_id } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let rows = metadata::load_schema_snapshot(c, &schema).await;
+                        let _ = evt_tx.send(DbEvent::SchemaSnapshot { request_id, rows });
                     }
                 }
             }
 
             DbCommand::LoadErDiagram { schema } => {
-                if let Some(c) = &client {
-                    match metadata::load_er_diagram(c, &schema).await {
-                        Ok(tables) => {
-                            let _ = evt_tx.send(DbEvent::ErDiagramData { schema, tables });
-                        }
-                        Err(e) => {
-                            let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        match metadata::load_er_diagram(c, &schema).await {
+                            Ok(tables) => {
+                                let _ = evt_tx.send(DbEvent::ErDiagramData { schema, tables });
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            }
                         }
                     }
                 }
             }
+
+            DbCommand::LoadFullSchemaForAi { request_id } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        let context = metadata::load_full_schema_for_ai(c).await;
+                        let _ = evt_tx.send(DbEvent::AiSchemaReady { request_id, context });
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::AiSchemaReady { request_id, context: String::new() });
+                }
+            }
+        }
+    }
+}
+
+/// Checks if the current client is alive; if not, attempts to reconnect using
+/// the last known profile. Returns `true` if a usable connection is available.
+/// Sends `DbEvent::Connected` on successful reconnect (triggers sidebar reload).
+async fn ensure_connected(
+    client: &mut Option<tokio_postgres::Client>,
+    cancel_handle: &mut Option<tokio_postgres::CancelToken>,
+    last_profile: &Option<ConnectionProfile>,
+    evt_tx: &Sender<DbEvent>,
+) -> bool {
+    // If client exists and connection is still alive, nothing to do.
+    if let Some(c) = client.as_ref() {
+        if !c.is_closed() {
+            return true;
+        }
+    }
+
+    // Connection is gone. Try to reconnect if we have a profile.
+    let profile = match last_profile {
+        Some(p) => p,
+        None => return false,
+    };
+
+    match connect_pg(profile).await {
+        Ok((c, cancel)) => {
+            let host = profile.host.clone();
+            let database = profile.database.clone();
+            *cancel_handle = Some(cancel);
+            *client = Some(c);
+            let _ = evt_tx.send(DbEvent::Connected { host, database });
+            true
+        }
+        Err(e) => {
+            let _ = evt_tx.send(DbEvent::QueryError(format!("Reconnect failed: {e}")));
+            false
         }
     }
 }
@@ -554,7 +710,7 @@ fn export_json(result: &QueryResult, path: &str) -> Result<()> {
             for (col, cell) in result.columns.iter().zip(row.iter()) {
                 let v = match cell {
                     crate::db::query::CellValue::Null => Value::Null,
-                    crate::db::query::CellValue::Text(s) => Value::String(s.clone()),
+                    crate::db::query::CellValue::Text(s) => Value::String(s.to_string()),
                     crate::db::query::CellValue::Integer(i) => json!(i),
                     crate::db::query::CellValue::Float(f) => json!(f),
                     crate::db::query::CellValue::Boolean(b) => Value::Bool(*b),

@@ -1,6 +1,12 @@
 # Ferox — Yapılacaklar
 
-## Aktif (Faz 7)
+## Aktif (Faz 8)
+
+### Tamamlandı
+- [x] **Multi-statement tabs** — birden fazla SELECT varsa her biri ayrı tab'da açılıyor (`ExecuteMulti` + `set_multi_results_for`)
+- [x] **Sütun istatistikleri** — column header sağ-tık → null %, distinct, min/max len, top-10 değer (client-side, DB roundtrip yok)
+- [x] **Fonksiyon/prosedür browser** — sidebar schema tree altında FUNCTIONS bölümü; lazy-load, ikon, arg signature, return type, sağ-tık menüsü
+- [x] **Schema Diff** — Query → Schema Diff menüsü; iki bağlantı/şema karşılaştırması; +added ~changed -removed tablolar + per-column diff; `information_schema.columns` üzerinden client-side hesaplama
 
 ### Küçük Eksikler
 - [ ] Bağlantı dialog'unda "Test Connection" butonu
@@ -11,6 +17,26 @@
 ---
 
 ## Tamamlanan
+
+### Faz 8 — Multi-statement Tabs + Sütun İstatistikleri ✓
+- [x] Multi-statement sorgu çalıştırınca her SELECT sonucu ayrı tab'da açılıyor
+- [x] Sütun başlığına sağ-tık → 📊 Statistics popup (null %, distinct, min/max uzunluk, top-10 değer)
+- [x] `split_sql_statements()` — single-quote ve `--` comment'i doğru atlayan SQL bölücü
+- [x] `DbCommand::ExecuteMulti` + `DbEvent::MultiQueryResults` (yeni kanal mesajları)
+- [x] `TabManager::set_multi_results_for` — ilk sonuç mevcut tab, kalanlar yeni tab
+- [x] `ColumnStats::compute()` — in-memory O(n) hesaplama, sıfır DB yükü
+- [x] `ResultTable` column header context menu + `TableOutput::col_stats_requested`
+
+### Faz 7 — i18n, Settings Menüsü, v0.2.3 ✓
+- [x] Tam EN/TR lokalizasyon — tüm UI string'leri çift dil; seçim config'e kaydediliyor
+- [x] `src/i18n.rs` — sıfır bağımlılık, compile-time safe, `I18n(Lang)` newtype
+- [x] Tüm UI modülleri güncellendi: app, sidebar, query_panel, result_table, explain, tab_manager, dashboard, er_diagram, join_builder, table_dialog, connection_dialog
+- [x] Settings menüsü — Language alt menüsü + About dialog
+- [x] About dialog — logo, sürüm (`env!("CARGO_PKG_VERSION")`), açıklama, repo linki
+- [x] Uygulama başlığı `pgclient` → `ferox` (title bar, taskbar, window chrome)
+- [x] `Cargo.toml` versiyonu 0.1.0 → 0.2.3
+- [x] `CHANGELOG.md` oluşturuldu
+- [x] `v0.2.3` annotated tag oluşturuldu
 
 ### Faz 6 — Multi-statement, Tab UX, RAM Optimizasyonları ✓
 - [x] Sorgu sonuna `;` koyunca hata veriyordu — `simple_query` protokolüne geçildi

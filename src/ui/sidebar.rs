@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Sense, Vec2};
 
-use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo, TableKind};
+use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, FunctionInfo, FunctionKind, IndexInfo, SchemaInfo, TableInfo, TableKind};
+use crate::i18n::I18n;
 
 /// Script kinds for the Generate Script menu.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,6 +19,7 @@ pub enum ScriptKind {
 #[derive(Debug)]
 pub enum SidebarAction {
     LoadTables(String),
+    LoadFunctions(String),
     LoadDetails { schema: String, table: String },
     BrowseTable { schema: String, table: String },
     /// Paste SQL into the active editor without executing.
@@ -208,6 +210,12 @@ pub struct Sidebar {
     table_details: HashMap<(String, String), TableDetailCache>,
     filter: String,
     selected: Option<(String, String)>,
+    /// Functions/procedures per schema (lazy-loaded alongside tables).
+    functions: HashMap<String, Vec<FunctionInfo>>,
+    /// Whether the FUNCTIONS section is expanded per schema.
+    expanded_functions: HashMap<String, bool>,
+    /// Schemas currently being refreshed in the background (stale data still shown).
+    refreshing: std::collections::HashSet<String>,
 }
 
 impl Sidebar {
@@ -218,7 +226,14 @@ impl Sidebar {
         self.expanded.clear();
         self.expanded_tables.clear();
         self.table_details.clear();
+        self.functions.clear();
+        self.expanded_functions.clear();
+        self.refreshing.clear();
         self.selected = None;
+    }
+
+    pub fn set_functions(&mut self, schema: &str, functions: Vec<FunctionInfo>) {
+        self.functions.insert(schema.to_owned(), functions);
     }
 
     pub fn set_schemas(&mut self, schemas: Vec<SchemaInfo>) {
@@ -228,10 +243,43 @@ impl Sidebar {
     pub fn set_tables(&mut self, schema: &str, tables: Vec<TableInfo>) {
         self.tables.insert(schema.to_owned(), tables);
         self.tables_loaded_at.insert(schema.to_owned(), Instant::now());
+        self.refreshing.remove(schema);
     }
 
     pub fn schema_names(&self) -> Vec<String> {
         self.schemas.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Build a compact schema summary for the Claude AI prompt.
+    /// Includes table names and, when already loaded, column names.
+    pub fn schema_context_for_ai(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let mut schemas: Vec<&str> = self.tables.keys().map(|s| s.as_str()).collect();
+        schemas.sort();
+        for schema in schemas {
+            if let Some(tables) = self.tables.get(schema) {
+                for t in tables {
+                    let key = (t.schema.clone(), t.name.clone());
+                    if let Some(details) = self.table_details.get(&key) {
+                        let cols: Vec<String> = details
+                            .columns
+                            .iter()
+                            .map(|c| {
+                                if c.data_type.is_empty() {
+                                    c.name.clone()
+                                } else {
+                                    format!("{} {}", c.name, c.data_type)
+                                }
+                            })
+                            .collect();
+                        lines.push(format!("- {}.{} ({})", schema, t.name, cols.join(", ")));
+                    } else {
+                        lines.push(format!("- {}.{}", schema, t.name));
+                    }
+                }
+            }
+        }
+        lines.join("\n")
     }
 
     /// Returns (table_names, column_names) for autocomplete.
@@ -293,10 +341,11 @@ impl Sidebar {
         );
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Vec<SidebarAction> {
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> Vec<SidebarAction> {
         let mut actions: Vec<SidebarAction> = Vec::new();
 
         // ── F5: force-refresh all expanded schemas ─────────────────────────────
+        // Stale data stays visible during reload; `refreshing` marks them as in-progress.
         if ui.input(|i| i.key_pressed(egui::Key::F5)) {
             let to_reload: Vec<String> = self
                 .expanded
@@ -305,9 +354,10 @@ impl Sidebar {
                 .map(|(k, _)| k.clone())
                 .collect();
             for schema_name in to_reload {
-                self.tables.remove(&schema_name);
                 self.tables_loaded_at.remove(&schema_name);
-                actions.push(SidebarAction::LoadTables(schema_name));
+                self.refreshing.insert(schema_name.clone());
+                actions.push(SidebarAction::LoadTables(schema_name.clone()));
+                actions.push(SidebarAction::LoadFunctions(schema_name));
             }
         }
 
@@ -331,7 +381,7 @@ impl Sidebar {
             .inner_margin(egui::Margin { left: 8.0, right: 8.0, top: 8.0, bottom: 4.0 })
             .show(ui, |ui| {
                 ui.label(
-                    RichText::new("SCHEMA BROWSER")
+                    RichText::new(i18n.schema_browser())
                         .small()
                         .strong()
                         .color(Color32::from_gray(120)),
@@ -340,7 +390,7 @@ impl Sidebar {
 
                 let filter_resp = ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
-                        .hint_text("🔍  Filter…")
+                        .hint_text(i18n.sidebar_filter_hint())
                         .desired_width(f32::INFINITY)
                         .font(egui::TextStyle::Small),
                 );
@@ -409,7 +459,15 @@ impl Sidebar {
                                 egui::FontId::proportional(13.0),
                                 COLOR_SCHEMA,
                             );
-                            if filter.is_empty() && !tables.is_empty() {
+                            if self.refreshing.contains(&schema.name) {
+                                painter.text(
+                                    rect.right_center() + Vec2::new(-8.0, 0.0),
+                                    egui::Align2::RIGHT_CENTER,
+                                    "↻",
+                                    egui::FontId::proportional(11.0),
+                                    Color32::from_rgb(120, 160, 200),
+                                );
+                            } else if filter.is_empty() && !tables.is_empty() {
                                 let badge = format!("{}", tables.len());
                                 painter.text(
                                     rect.right_center() + Vec2::new(-8.0, 0.0),
@@ -429,8 +487,13 @@ impl Sidebar {
                             .entry(schema.name.clone())
                             .or_insert(false);
                         *entry = !*entry;
-                        if *entry && !self.tables.contains_key(&schema.name) {
-                            actions.push(SidebarAction::LoadTables(schema.name.clone()));
+                        if *entry {
+                            if !self.tables.contains_key(&schema.name) {
+                                actions.push(SidebarAction::LoadTables(schema.name.clone()));
+                            }
+                            if !self.functions.contains_key(&schema.name) {
+                                actions.push(SidebarAction::LoadFunctions(schema.name.clone()));
+                            }
                         }
                     }
 
@@ -440,27 +503,40 @@ impl Sidebar {
                             RichText::new(&schema_name_for_menu).strong().small(),
                         );
                         ui.separator();
-                        if ui.button("＋  New Table…").clicked() {
+                        if ui.button(i18n.schema_menu_new_table()).clicked() {
                             actions.push(SidebarAction::NewTable {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();
                         }
-                        if ui.button("📐  View ER Diagram").clicked() {
+                        if ui.button(i18n.schema_menu_er()).clicked() {
                             actions.push(SidebarAction::ViewErDiagram {
                                 schema: schema_name_for_menu.clone(),
                             });
                             ui.close_menu();
                         }
-                        if ui.button("↺  Refresh").clicked() {
-                            actions.push(SidebarAction::LoadTables(
-                                schema_name_for_menu.clone(),
-                            ));
+                        if ui.button(i18n.schema_menu_refresh()).clicked() {
+                            self.functions.remove(&schema_name_for_menu);
+                            actions.push(SidebarAction::LoadTables(schema_name_for_menu.clone()));
+                            actions.push(SidebarAction::LoadFunctions(schema_name_for_menu.clone()));
                             ui.close_menu();
                         }
                     });
 
-                    if !is_expanded || visible.is_empty() {
+                    let visible_funcs: Vec<&FunctionInfo> = self
+                        .functions
+                        .get(&schema.name)
+                        .map(|fns| {
+                            fns.iter()
+                                .filter(|f| {
+                                    filter.is_empty()
+                                        || f.name.to_lowercase().contains(&filter)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if !is_expanded || (visible.is_empty() && visible_funcs.is_empty()) {
                         continue;
                     }
 
@@ -469,10 +545,10 @@ impl Sidebar {
                         ui.spacing_mut().item_spacing.y = 0.0;
 
                         let kinds = [
-                            (TableKind::Table, "TABLES"),
-                            (TableKind::View, "VIEWS"),
-                            (TableKind::MaterializedView, "MAT VIEWS"),
-                            (TableKind::ForeignTable, "FOREIGN TABLES"),
+                            (TableKind::Table, i18n.kind_tables()),
+                            (TableKind::View, i18n.kind_views()),
+                            (TableKind::MaterializedView, i18n.kind_mat_views()),
+                            (TableKind::ForeignTable, i18n.kind_foreign_tables()),
                         ];
 
                         for (kind, kind_label) in &kinds {
@@ -564,7 +640,7 @@ impl Sidebar {
                                     ui.separator();
 
                                     // ── Script generation ─────────────────
-                                    ui.menu_button("📄  Generate Script", |ui| {
+                                    ui.menu_button(i18n.table_menu_generate_script(), |ui| {
                                         for (label, kind) in [
                                             ("SELECT", ScriptKind::Select),
                                             ("INSERT", ScriptKind::Insert),
@@ -583,7 +659,7 @@ impl Sidebar {
                                     });
                                     ui.separator();
 
-                                    if ui.button("▶  Browse rows").clicked() {
+                                    if ui.button(i18n.table_menu_browse()).clicked() {
                                         actions.push(SidebarAction::BrowseTable {
                                             schema: schema_name.clone(),
                                             table: table_name.clone(),
@@ -591,7 +667,7 @@ impl Sidebar {
                                         ui.close_menu();
                                     }
                                     if matches!(table.kind, TableKind::Table) {
-                                        if ui.button("✎  Edit Table…").clicked() {
+                                        if ui.button(i18n.table_menu_edit()).clicked() {
                                             actions.push(SidebarAction::EditTable {
                                                 schema: schema_name.clone(),
                                                 table: table_name.clone(),
@@ -600,7 +676,7 @@ impl Sidebar {
                                         }
                                     }
                                     if matches!(table.kind, TableKind::View | TableKind::MaterializedView) {
-                                        if ui.button("{}  Show DDL").clicked() {
+                                        if ui.button(i18n.table_menu_show_ddl()).clicked() {
                                             let sql = match table.kind {
                                                 TableKind::MaterializedView => format!(
                                                     "SELECT 'CREATE MATERIALIZED VIEW \"{schema_name}\".\"{table_name}\" AS' || chr(10) \
@@ -619,14 +695,14 @@ impl Sidebar {
                                             ui.close_menu();
                                         }
                                     }
-                                    if ui.button("∑  Count rows").clicked() {
+                                    if ui.button(i18n.table_menu_count()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT COUNT(*) AS total FROM \"{schema_name}\".\"{table_name}\";"
                                         )));
                                         ui.close_menu();
                                     }
                                     ui.separator();
-                                    if ui.button("≡  Show columns").clicked() {
+                                    if ui.button(i18n.table_menu_show_cols()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT column_name, data_type, is_nullable, column_default \
                                              FROM information_schema.columns \
@@ -636,7 +712,7 @@ impl Sidebar {
                                         )));
                                         ui.close_menu();
                                     }
-                                    if ui.button("⊟  Show indexes").clicked() {
+                                    if ui.button(i18n.table_menu_show_indexes()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT indexname, indexdef \
                                              FROM pg_indexes \
@@ -645,7 +721,7 @@ impl Sidebar {
                                         )));
                                         ui.close_menu();
                                     }
-                                    if ui.button("⊠  Show foreign keys").clicked() {
+                                    if ui.button(i18n.table_menu_show_fks()).clicked() {
                                         actions.push(SidebarAction::RunSql(format!(
                                             "SELECT c.conname, pg_get_constraintdef(c.oid) \
                                              FROM pg_constraint c \
@@ -668,6 +744,84 @@ impl Sidebar {
                                 }
                             }
                         }
+
+                        // ── FUNCTIONS section ──────────────────────────────
+                        if !visible_funcs.is_empty() {
+                            let fn_exp_key = format!("__fn__{}", schema.name);
+                            let fn_expanded = *self
+                                .expanded_functions
+                                .get(&schema.name)
+                                .unwrap_or(&false);
+
+                            ui.add_space(4.0);
+                            let hdr_resp = render_kind_header_clickable(
+                                ui,
+                                i18n.kind_functions(),
+                                visible_funcs.len(),
+                                fn_expanded,
+                            );
+                            if hdr_resp.clicked() {
+                                let e = self
+                                    .expanded_functions
+                                    .entry(schema.name.clone())
+                                    .or_insert(false);
+                                *e = !*e;
+                            }
+
+                            if fn_expanded {
+                                let schema_name = schema.name.clone();
+                                for func in &visible_funcs {
+                                    let resp = render_function_row(
+                                        ui,
+                                        func,
+                                        egui::Id::new((&fn_exp_key, &func.name, &func.args)),
+                                    );
+                                    let func_name = func.name.clone();
+                                    let func_args = func.args.clone();
+                                    let func_ret  = func.return_type.clone();
+                                    let func_kind = func.kind.clone();
+                                    let sn = schema_name.clone();
+                                    resp.context_menu(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("{sn}.{func_name}"))
+                                                .strong()
+                                                .small(),
+                                        );
+                                        ui.separator();
+                                        if ui.button(i18n.fn_show_definition()).clicked() {
+                                            // Paste a query that retrieves the source.
+                                            let sql = if func_kind == FunctionKind::Aggregate {
+                                                format!(
+                                                    "-- Aggregate functions do not have a pg_get_functiondef\n\
+                                                     SELECT p.proname, p.prokind\n\
+                                                     FROM pg_proc p\n\
+                                                     JOIN pg_namespace n ON p.pronamespace = n.oid\n\
+                                                     WHERE n.nspname = '{sn}' AND p.proname = '{func_name}';"
+                                                )
+                                            } else {
+                                                format!(
+                                                    "SELECT pg_get_functiondef('{sn}.{func_name}({func_args})'::regprocedure);"
+                                                )
+                                            };
+                                            actions.push(SidebarAction::SetSql(sql));
+                                            ui.close_menu();
+                                        }
+                                        if func_kind != FunctionKind::Aggregate
+                                            && func_kind != FunctionKind::Window
+                                        {
+                                            if ui.button(i18n.fn_copy_call()).clicked() {
+                                                let call = build_call_template(
+                                                    &sn, &func_name, &func_args,
+                                                    &func_ret, &func_kind,
+                                                );
+                                                actions.push(SidebarAction::SetSql(call));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
                     });
 
                     ui.add_space(2.0);
@@ -677,7 +831,7 @@ impl Sidebar {
                     ui.add_space(20.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            RichText::new("Not connected")
+                            RichText::new(i18n.lbl_not_connected_sidebar())
                                 .color(Color32::from_gray(90))
                                 .italics(),
                         );
@@ -872,5 +1026,175 @@ fn render_table_details(ui: &mut egui::Ui, details: &Option<TableDetailCache>) {
 
     if d.columns.is_empty() && d.indexes.is_empty() && d.foreign_keys.is_empty() {
         ui.label(RichText::new("(empty)").small().color(Color32::from_gray(70)));
+    }
+}
+
+/// Like `render_kind_header` but clickable (toggles expand) and shows an arrow.
+fn render_kind_header_clickable(
+    ui: &mut egui::Ui,
+    label: &str,
+    count: usize,
+    expanded: bool,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 18.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+
+        let bg = if resp.hovered() {
+            Color32::from_rgb(55, 59, 63)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 2.0, bg);
+
+        let arrow = if expanded { "▾" } else { "▸" };
+        painter.text(
+            rect.left_center() + Vec2::new(4.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            arrow,
+            egui::FontId::proportional(9.0),
+            Color32::from_rgb(110, 123, 139),
+        );
+        painter.text(
+            rect.left_center() + Vec2::new(14.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            label.to_uppercase(),
+            egui::FontId::proportional(9.5),
+            Color32::from_rgb(110, 123, 139),
+        );
+
+        let badge_str = format!("{count}");
+        let badge_font = egui::FontId::proportional(9.5);
+        let badge_galley = painter.layout_no_wrap(
+            badge_str.clone(),
+            badge_font.clone(),
+            Color32::from_rgb(110, 123, 139),
+        );
+        let badge_w = badge_galley.rect.width() + 8.0;
+        let badge_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - badge_w / 2.0 - 4.0, rect.center().y),
+            egui::vec2(badge_w, 13.0),
+        );
+        painter.rect_filled(badge_rect, egui::Rounding::same(6.0), Color32::from_rgb(76, 80, 82));
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &badge_str,
+            badge_font,
+            Color32::from_rgb(169, 183, 198),
+        );
+    }
+    resp
+}
+
+const COLOR_FUNC: Color32 = Color32::from_rgb(78, 201, 176); // teal — distinct from tables
+
+fn render_function_row(
+    ui: &mut egui::Ui,
+    func: &FunctionInfo,
+    id: egui::Id,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 20.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let bg = if resp.hovered() {
+            Color32::from_rgb(55, 59, 63)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 0.0, bg);
+
+        // Icon
+        painter.text(
+            rect.left_center() + Vec2::new(6.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            func.kind.icon(),
+            egui::FontId::proportional(11.0),
+            COLOR_FUNC,
+        );
+
+        // name(args) → return_type  (truncated)
+        let sig = if func.args.is_empty() {
+            format!("{}()", func.name)
+        } else {
+            format!("{}(…)", func.name)
+        };
+        painter.text(
+            rect.left_center() + Vec2::new(20.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &sig,
+            egui::FontId::monospace(11.0),
+            Color32::from_rgb(169, 183, 198),
+        );
+
+        // Return type badge on the right
+        if !func.return_type.is_empty() && func.return_type != "void" {
+            let ret_short: String = func.return_type.chars().take(16).collect();
+            painter.text(
+                rect.right_center() + Vec2::new(-6.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                &ret_short,
+                egui::FontId::monospace(9.5),
+                Color32::from_gray(90),
+            );
+        }
+    }
+
+    // Hover tooltip: full signature
+    resp.on_hover_ui(|ui| {
+        ui.horizontal(|ui| {
+            ui.colored_label(COLOR_FUNC, func.kind.icon());
+            ui.label(
+                RichText::new(func.kind.label())
+                    .small()
+                    .color(Color32::from_gray(160)),
+            );
+        });
+        ui.add(egui::Label::new(
+            RichText::new(format!("{}({})", func.name, func.args)).monospace().small(),
+        ));
+        if !func.return_type.is_empty() {
+            ui.label(
+                RichText::new(format!("→ {}", func.return_type))
+                    .small()
+                    .color(Color32::from_gray(140)),
+            );
+        }
+    })
+}
+
+/// Generate a call template for the editor (SET SQL).
+fn build_call_template(
+    schema: &str,
+    name: &str,
+    args: &str,
+    return_type: &str,
+    kind: &FunctionKind,
+) -> String {
+    // Build placeholder args: each param "name type" → just the name or a placeholder.
+    let arg_placeholders: String = args
+        .split(',')
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty())
+        .map(|a| {
+            // "param_name type" → keep param_name, else use placeholder
+            let parts: Vec<&str> = a.splitn(2, ' ').collect();
+            if parts.len() == 2 { format!("NULL /* {} */", a) } else { "NULL".to_owned() }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    match kind {
+        FunctionKind::Procedure => {
+            format!("CALL \"{schema}\".\"{name}\"({arg_placeholders});")
+        }
+        _ => {
+            let _ = return_type;
+            format!("SELECT \"{schema}\".\"{name}\"({arg_placeholders});")
+        }
     }
 }

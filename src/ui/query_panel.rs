@@ -3,6 +3,7 @@ use std::sync::mpsc::Sender;
 
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
+use crate::i18n::{I18n, Lang};
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
 use crate::ui::result_table::ResultTable;
@@ -10,6 +11,80 @@ use crate::ui::syntax::highlight_sql;
 
 const PAGE_SIZE: usize = 100;
 const MAX_LOG: usize = 200;
+
+// ── Column width helper ───────────────────────────────────────────────────────
+
+/// Sample up to 200 rows to compute content-aware initial column widths.
+/// Called once per result set; never runs per-frame.
+fn compute_col_widths(result: &QueryResult) -> Vec<f32> {
+    const SAMPLE: usize = 200;
+    const CHAR_PX: f32 = 7.5;
+    const PAD: f32 = 20.0;
+
+    let mut max_chars: Vec<usize> = result.columns.iter().map(|c| c.len()).collect();
+    for row in result.rows.iter().take(SAMPLE) {
+        for (i, cell) in row.iter().enumerate() {
+            if i < max_chars.len() {
+                let len = cell.to_string().len().min(50);
+                if len > max_chars[i] {
+                    max_chars[i] = len;
+                }
+            }
+        }
+    }
+    max_chars
+        .iter()
+        .map(|&n| (n as f32 * CHAR_PX + PAD).max(60.0).min(300.0))
+        .collect()
+}
+
+// ── SQL statement splitter ────────────────────────────────────────────────────
+
+/// Split SQL at `;` boundaries, correctly skipping `;` inside single-quoted
+/// strings and `--` line comments. Returns non-empty, trimmed statements.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut stmts = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_line_comment = false;
+    let mut chars = sql.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            current.push(ch);
+            if ch == '\n' { in_line_comment = false; }
+            continue;
+        }
+        if in_single_quote {
+            current.push(ch);
+            if ch == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    current.push(chars.next().unwrap()); // escaped ''
+                } else {
+                    in_single_quote = false;
+                }
+            }
+            continue;
+        }
+        match ch {
+            '\'' => { in_single_quote = true; current.push(ch); }
+            '-' if chars.peek() == Some(&'-') => {
+                in_line_comment = true;
+                current.push(ch);
+                current.push(chars.next().unwrap());
+            }
+            ';' => {
+                let t = current.trim().to_owned();
+                if !t.is_empty() { stmts.push(t); }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let t = current.trim().to_owned();
+    if !t.is_empty() { stmts.push(t); }
+    stmts
+}
 
 // ── UTF-8 index helpers ────────────────────────────────────────────────────────
 
@@ -62,6 +137,58 @@ struct CellPopup {
     col_idx: usize,
     /// Actual row index in QueryResult (after sort mapping).
     actual_row: usize,
+}
+
+// ── Column statistics ─────────────────────────────────────────────────────────
+
+struct ColumnStats {
+    col_name: String,
+    total: usize,
+    null_count: usize,
+    distinct: usize,
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+    top_values: Vec<(String, usize)>,
+}
+
+impl ColumnStats {
+    fn compute(result: &crate::db::query::QueryResult, col_idx: usize) -> Self {
+        use std::collections::HashMap;
+        let col_name = result.columns[col_idx].clone();
+        let total = result.rows.len();
+        let mut null_count = 0usize;
+        let mut freq: HashMap<String, usize> = HashMap::new();
+        let mut min_len = usize::MAX;
+        let mut max_len = 0usize;
+
+        for row in &result.rows {
+            let cell = &row[col_idx];
+            if matches!(cell, CellValue::Null) {
+                null_count += 1;
+            } else {
+                let s = cell.to_string();
+                let len = s.chars().count();
+                if len < min_len { min_len = len; }
+                if len > max_len { max_len = len; }
+                *freq.entry(s).or_insert(0) += 1;
+            }
+        }
+
+        let distinct = freq.len();
+        let mut top_values: Vec<(String, usize)> = freq.into_iter().collect();
+        top_values.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        top_values.truncate(10);
+
+        ColumnStats {
+            col_name,
+            total,
+            null_count,
+            distinct,
+            min_len: if min_len == usize::MAX { None } else { Some(min_len) },
+            max_len: if null_count == total { None } else { Some(max_len) },
+            top_values,
+        }
+    }
 }
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -150,10 +277,34 @@ pub struct QueryPanel {
     result_filter: String,
     /// Currently selected cell (display_row, col_idx) for Ctrl+C.
     selected_cell: Option<(usize, usize)>,
+    /// Cached sort order for the current result — reused across frames.
+    sorted_indices: Vec<usize>,
+    /// Filtered view of sorted_indices — only recomputed when filter/sort/result changes.
+    display_indices: Vec<usize>,
+    /// Filter text when display_indices was last computed (used for dirty detection).
+    display_filter_cache: String,
+    /// When true, display_indices must be recomputed before next render.
+    display_dirty: bool,
+    /// Content-aware initial column widths computed once per result set.
+    col_widths: Vec<f32>,
     // ── Autocomplete ─────────────────────────────────────────────────────────
     autocomplete: Autocomplete,
     completion_tables: Vec<String>,
     completion_columns: Vec<String>,
+    /// Current UI language — used for log messages generated outside show().
+    pub lang: Lang,
+    /// Column statistics popup state.
+    col_stats: Option<ColumnStats>,
+    // ── AI / NL→SQL ──────────────────────────────────────────────────────────
+    /// Whether the NL input bar is visible.
+    pub nl_bar_visible: bool,
+    /// Current text in the NL input.
+    pub nl_input: String,
+    /// Pending NL prompt waiting to be picked up by the app and sent to AI.
+    /// Set by QueryPanel; cleared (taken) by the app each frame.
+    pub nl_submit: Option<String>,
+    /// True while an AI request is in flight — spinner shown, input disabled.
+    pub ai_pending: bool,
 }
 
 impl Default for QueryPanel {
@@ -178,9 +329,20 @@ impl Default for QueryPanel {
             cell_popup: None,
             result_filter: String::new(),
             selected_cell: None,
+            sorted_indices: Vec::new(),
+            display_indices: Vec::new(),
+            display_filter_cache: String::new(),
+            display_dirty: false,
+            col_widths: Vec::new(),
             autocomplete: Autocomplete::default(),
             completion_tables: Vec::new(),
             completion_columns: Vec::new(),
+            lang: Lang::En,
+            col_stats: None,
+            nl_bar_visible: false,
+            nl_input: String::new(),
+            nl_submit: None,
+            ai_pending: false,
         }
     }
 }
@@ -249,10 +411,8 @@ impl QueryPanel {
         if self.browse.is_some() && result.rows_affected.is_some() {
             let n = result.rows_affected.unwrap();
             let ms = result.elapsed_ms;
-            self.push_log(LogEntry::info(format!(
-                "OK — {n} row{} affected  ({ms:.1} ms)",
-                if n == 1 { "" } else { "s" }
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::info(i18n.log_ok_rows(n as i64, ms)));
             self.pending_refresh = true;
             return;
         }
@@ -260,14 +420,18 @@ impl QueryPanel {
         // DML outside browse mode.
         if let Some(n) = result.rows_affected {
             let ms = result.elapsed_ms;
-            self.push_log(LogEntry::info(format!(
-                "OK — {n} row{} affected  ({ms:.1} ms)",
-                if n == 1 { "" } else { "s" }
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::info(i18n.log_ok_rows(n as i64, ms)));
             self.active_tab = PanelTab::Messages;
         }
 
+        let n = result.rows.len();
+        self.col_widths = compute_col_widths(&result);
         self.result = Some(result);
+        self.sorted_indices = (0..n).collect();
+        self.display_indices = (0..n).collect();
+        self.display_filter_cache = String::new();
+        self.display_dirty = false;
         self.selected_cell = None;
         if self.result.as_ref().map(|r| !r.columns.is_empty()).unwrap_or(false) {
             self.active_tab = PanelTab::Results;
@@ -278,6 +442,21 @@ impl QueryPanel {
         self.pk_cols.insert((schema.to_owned(), table.to_owned()), cols);
     }
 
+    /// Called by the app when Claude returns a SQL string. Inserts into editor.
+    pub fn set_ai_result(&mut self, sql: String) {
+        self.ai_pending = false;
+        self.sql = sql;
+        self.nl_input.clear();
+        self.nl_bar_visible = false;
+    }
+
+    /// Called by the app when the AI call fails.
+    pub fn set_ai_error(&mut self, msg: String) {
+        self.ai_pending = false;
+        self.push_log(LogEntry::error(format!("AI: {msg}")));
+        self.active_tab = PanelTab::Messages;
+    }
+
     pub fn set_error(&mut self, msg: String) {
         self.push_log(LogEntry::error(msg));
         self.running = false;
@@ -285,7 +464,8 @@ impl QueryPanel {
     }
 
     pub fn set_export_done(&mut self, path: String) {
-        self.push_log(LogEntry::info(format!("Exported → {path}")));
+        let i18n = I18n::new(self.lang);
+        self.push_log(LogEntry::info(i18n.log_exported(&path)));
     }
 
     pub fn is_running(&self) -> bool {
@@ -324,6 +504,17 @@ impl QueryPanel {
         }
     }
 
+    /// Send current SQL: multiple statements → ExecuteMulti, single → Execute.
+    fn send_execute(&self, db_tx: &Sender<DbCommand>) {
+        let stmts = split_sql_statements(&self.sql);
+        if stmts.len() > 1 {
+            let _ = db_tx.send(DbCommand::ExecuteMulti(stmts));
+        } else {
+            let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+        }
+    }
+
+
     pub fn trigger_export_csv(&mut self, db_tx: &Sender<DbCommand>) {
         let sql = self.export_sql();
         if let Some(path) = pick_save_path("csv") {
@@ -335,6 +526,34 @@ impl QueryPanel {
         let sql = self.export_sql();
         if let Some(path) = pick_save_path("json") {
             let _ = db_tx.send(DbCommand::ExportJson { sql, path });
+        }
+    }
+
+    /// Open a SQL file via native dialog and execute it directly (no editor load).
+    pub fn run_sql_file(&mut self, db_tx: &Sender<DbCommand>) {
+        let Some(path) = pick_open_sql_file() else { return };
+        let i18n = I18n::new(self.lang);
+        match std::fs::read_to_string(&path) {
+            Ok(sql) => {
+                if sql.trim().is_empty() {
+                    self.push_log(LogEntry::warning(i18n.log_file_empty(&path)));
+                    self.active_tab = PanelTab::Messages;
+                    return;
+                }
+                let filename = std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                self.push_log(LogEntry::info(i18n.log_running_file(&filename)));
+                self.browse = None;
+                self.browse_result = false;
+                self.set_running();
+                let _ = db_tx.send(DbCommand::Execute(sql));
+            }
+            Err(e) => {
+                self.push_log(LogEntry::error(i18n.log_file_error(&e)));
+                self.active_tab = PanelTab::Messages;
+            }
         }
     }
 
@@ -352,6 +571,8 @@ impl QueryPanel {
         ui: &mut egui::Ui,
         db_tx: &Sender<DbCommand>,
         history: &mut QueryHistory,
+        i18n: &I18n,
+        ai_enabled: bool,
     ) {
         // Auto-refresh after a DML (UPDATE/INSERT/DELETE) in browse mode.
         if self.pending_refresh {
@@ -377,7 +598,7 @@ impl QueryPanel {
                     let col_dim   = egui::Color32::from_rgb(76, 80, 82);    // #4c5052
 
                     // ── Group 1: Execute ──────────────────────────────────────
-                    let run_label = if self.running { "⏳ Running…" } else { "▶ Run" };
+                    let run_label = if self.running { i18n.btn_running() } else { i18n.btn_run() };
                     let run_fill  = if self.running { col_dim } else { col_green };
                     if ui
                         .add_enabled(!self.running, egui::Button::new(run_label).fill(run_fill))
@@ -389,12 +610,12 @@ impl QueryPanel {
                         history.push(self.sql.clone());
                         let _ = history.save();
                         self.set_running();
-                        let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+                        self.send_execute(db_tx);
                     }
 
                     let cancel_fill = if self.running { col_red } else { col_dim };
                     if ui
-                        .add_enabled(self.running, egui::Button::new("■ Cancel").fill(cancel_fill))
+                        .add_enabled(self.running, egui::Button::new(i18n.btn_cancel_query()).fill(cancel_fill))
                         .clicked()
                     {
                         let _ = db_tx.send(DbCommand::CancelQuery);
@@ -403,9 +624,9 @@ impl QueryPanel {
                     if ui
                         .add_enabled(
                             !self.running && !self.sql.trim().is_empty(),
-                            egui::Button::new("⚡ Explain"),
+                            egui::Button::new(i18n.btn_explain()),
                         )
-                        .on_hover_text("Run EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)")
+                        .on_hover_text(i18n.hover_explain())
                         .clicked()
                     {
                         self.browse = None;
@@ -423,13 +644,13 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 2: History ──────────────────────────────────────
-                    if ui.button("⬆ Hist").on_hover_text("Previous query (↑)").clicked() {
+                    if ui.button(i18n.btn_hist_prev()).on_hover_text(i18n.hover_hist_prev()).clicked() {
                         if let Some(entry) = history.prev() {
                             self.sql = entry.to_owned();
                             self.browse = None;
                         }
                     }
-                    if ui.button("⬇").on_hover_text("Next query (↓)").clicked() {
+                    if ui.button("⬇").on_hover_text(i18n.hover_hist_next()).clicked() {
                         match history.next() {
                             Some(entry) => {
                                 self.sql = entry.to_owned();
@@ -442,8 +663,8 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 3: Format ───────────────────────────────────────
-                    if ui.button("⇄ Format")
-                        .on_hover_text("Format SQL (Shift+Alt+F)")
+                    if ui.button(i18n.btn_format())
+                        .on_hover_text(i18n.hover_format())
                         .clicked()
                         || ui.input(|i| {
                             i.modifiers.shift
@@ -465,14 +686,70 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 4: Export ───────────────────────────────────────
-                    if ui.button("CSV").on_hover_text("Export as CSV…").clicked() {
+                    if ui.button("CSV").on_hover_text(i18n.hover_export_csv()).clicked() {
                         self.trigger_export_csv(db_tx);
                     }
-                    if ui.button("JSON").on_hover_text("Export as JSON…").clicked() {
+                    if ui.button("JSON").on_hover_text(i18n.hover_export_json()).clicked() {
                         self.trigger_export_json(db_tx);
                     }
 
+                    ui.separator();
+
+                    // ── Group 5: Run File ─────────────────────────────────────
+                    if ui
+                        .add_enabled(!self.running, egui::Button::new(i18n.btn_run_file()))
+                        .on_hover_text(i18n.hover_run_file())
+                        .clicked()
+                    {
+                        self.run_sql_file(db_tx);
+                    }
+
+                    // ── Group 6: AI (shown only when API key configured) ───────
+                    if ai_enabled {
+                        ui.separator();
+                        let ai_label = if self.nl_bar_visible { "✦ AI ▲" } else { "✦ AI" };
+                        let ai_fill = if self.nl_bar_visible {
+                            egui::Color32::from_rgb(60, 90, 140)
+                        } else {
+                            egui::Color32::from_rgb(45, 65, 100)
+                        };
+                        if ui
+                            .add(egui::Button::new(ai_label).fill(ai_fill))
+                            .on_hover_text("Natural language → SQL (Claude AI)")
+                            .clicked()
+                        {
+                            self.nl_bar_visible = !self.nl_bar_visible;
+                        }
+                    }
                 });
+
+                // ── NL bar (shown when AI enabled and toggled open) ───────────
+                if ai_enabled && self.nl_bar_visible {
+                    ui.horizontal(|ui| {
+                        ui.add_space(4.0);
+                        let hint = egui::RichText::new("Describe your query…")
+                            .color(egui::Color32::from_gray(90));
+                        let te = egui::TextEdit::singleline(&mut self.nl_input)
+                            .hint_text(hint)
+                            .desired_width(ui.available_width() - 80.0);
+                        let te_resp = ui.add_enabled(!self.ai_pending, te);
+
+                        let submit = (!self.ai_pending && !self.nl_input.trim().is_empty())
+                            && (ui.button("→").clicked()
+                                || te_resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+
+                        if submit {
+                            self.nl_submit = Some(self.nl_input.trim().to_owned());
+                            self.ai_pending = true;
+                        }
+
+                        if self.ai_pending {
+                            ui.spinner();
+                        }
+                    });
+                    ui.add_space(2.0);
+                }
 
                 // Ctrl+Space: force-show autocomplete
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Space)) {
@@ -509,7 +786,7 @@ impl QueryPanel {
                     .layouter(&mut layouter)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
-                    .hint_text("Enter SQL… (Ctrl+Enter to run, Enter to accept autocomplete)");
+                    .hint_text(i18n.hint_sql_editor());
                 // Wrap in a ScrollArea so the layout height is strictly capped at
                 // editor_height. Without this, TextEdit grows its layout allocation
                 // as content grows, pushing the result tab bar off-screen.
@@ -615,7 +892,7 @@ impl QueryPanel {
                     history.push(self.sql.clone());
                     let _ = history.save();
                     self.set_running();
-                    let _ = db_tx.send(DbCommand::Execute(self.sql.clone()));
+                    self.send_execute(db_tx);
                 }
             });
 
@@ -629,14 +906,15 @@ impl QueryPanel {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("Browse: {}", state.label()))
+                            egui::RichText::new(format!("{} {}", i18n.browse_prefix(), state.label()))
                                 .strong()
                                 .color(egui::Color32::from_rgb(100, 180, 255)),
                         );
                         if let Some(col) = &state.sort_col {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "  sorted by {} {}",
+                                    "  {} {} {}",
+                                    i18n.browse_sorted_by(),
                                     col,
                                     if state.sort_asc { "▲" } else { "▼" }
                                 ))
@@ -644,7 +922,7 @@ impl QueryPanel {
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕ Exit browse").clicked() {
+                            if ui.small_button(i18n.btn_exit_browse()).clicked() {
                                 self.browse = None;
                                 self.browse_result = false;
                             }
@@ -664,9 +942,11 @@ impl QueryPanel {
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    let results_label = i18n.tab_results();
+                    let history_label = i18n.tab_history();
                     let tabs: &[(PanelTab, &str, Option<egui::Color32>)] = &[
-                        (PanelTab::Results, "Results", None),
-                        (PanelTab::History, "History", None),
+                        (PanelTab::Results, results_label, None),
+                        (PanelTab::History, history_label, None),
                     ];
 
                     for (tab, label, _color) in tabs {
@@ -692,7 +972,7 @@ impl QueryPanel {
                     // Explain tab — only when plan exists
                     if self.explain_plan.is_some() {
                         let is_active = self.active_tab == PanelTab::Plan;
-                        let text = egui::RichText::new("⚡ Plan")
+                        let text = egui::RichText::new(i18n.tab_plan())
                             .color(if is_active { egui::Color32::from_rgb(100, 200, 255) } else { text_dim });
                         let btn = egui::Button::new(text)
                             .fill(egui::Color32::TRANSPARENT)
@@ -713,9 +993,9 @@ impl QueryPanel {
                         let error_count = self.log.iter().filter(|e| e.kind == LogKind::Error).count();
                         let is_active = self.active_tab == PanelTab::Messages;
                         let label_str = if error_count > 0 {
-                            format!("Messages ({})", error_count)
+                            i18n.tab_messages_n(error_count)
                         } else {
-                            "Messages".to_owned()
+                            i18n.tab_messages().to_owned()
                         };
                         let msg_color = if error_count > 0 {
                             egui::Color32::from_rgb(220, 80, 80)
@@ -745,7 +1025,7 @@ impl QueryPanel {
                     // ── Filter bar ───────────────────────────────────────────
                     if self.result.is_some() {
                         ui.horizontal(|ui| {
-                            let hint = egui::RichText::new("🔍 Filter results…")
+                            let hint = egui::RichText::new(i18n.filter_hint())
                                 .color(egui::Color32::from_rgb(90, 95, 100));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.result_filter)
@@ -772,12 +1052,35 @@ impl QueryPanel {
                     }
 
                     if self.result.is_some() {
+                        // ── Invalidate display_indices when filter/sort/result changed ──
+                        if self.display_dirty || self.result_filter != self.display_filter_cache {
+                            if let Some(result) = &self.result {
+                                if self.result_filter.is_empty() {
+                                    self.display_indices = self.sorted_indices.clone();
+                                } else {
+                                    let f = self.result_filter.to_lowercase();
+                                    self.display_indices = self.sorted_indices.iter().copied()
+                                        .filter(|&i| {
+                                            result.rows[i].iter().any(|cell| {
+                                                cell.to_string().to_lowercase().contains(&f)
+                                            })
+                                        })
+                                        .collect();
+                                }
+                                self.display_filter_cache = self.result_filter.clone();
+                                self.display_dirty = false;
+                            }
+                        }
+
                         // ── Build and show table ─────────────────────────────
                         let output = {
                             let result = self.result.as_ref().unwrap();
-                            let mut table = ResultTable::new(result);
+                            let mut table = ResultTable::with_indices(
+                                result,
+                                std::mem::take(&mut self.sorted_indices),
+                                self.col_widths.clone(),
+                            );
                             table.db_sort_mode = self.browse.is_some();
-                            table.filter_text = self.result_filter.clone();
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);
                             }
@@ -802,7 +1105,7 @@ impl QueryPanel {
                                 table.edit_needs_focus = self.edit_needs_focus;
                             }
 
-                            let out = table.show(ui);
+                            let out = table.show(ui, i18n, &self.display_indices);
 
                             // Save back edit state (value may have changed)
                             if let (Some(r), Some(c)) = (table.edit_row, table.edit_col) {
@@ -810,12 +1113,13 @@ impl QueryPanel {
                                 self.edit_needs_focus = false;
                             }
 
-                            (out, table.sorted_indices.clone())
+                            (out, table.sorted_indices)
                         }; // borrow of self.result released here
 
                         let (output, sorted_indices) = output;
 
                         // ── Handle sort ──────────────────────────────────────
+                        let sort_did_change = output.sort_changed.is_some();
                         if let (Some((col_name, asc)), Some(state)) =
                             (output.sort_changed, &mut self.browse)
                         {
@@ -873,36 +1177,52 @@ impl QueryPanel {
                             self.edit_state = None;
                             self.edit_needs_focus = false;
                         }
+
+                        // ── Handle column stats request ───────────────────────
+                        if let Some(col_idx) = output.col_stats_requested {
+                            if let Some(result) = &self.result {
+                                if col_idx < result.columns.len() {
+                                    self.col_stats = Some(ColumnStats::compute(result, col_idx));
+                                }
+                            }
+                        }
+
+                        // Save sorted indices back for next frame (avoids per-frame reallocation).
+                        self.sorted_indices = sorted_indices;
+                        // If sort changed, display_indices must be recomputed next frame.
+                        if sort_did_change {
+                            self.display_dirty = true;
+                        }
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Running…");
+                            ui.label(i18n.lbl_running());
                         });
                     } else {
-                        ui.label("No results yet. Run a query with F5 or Ctrl+Enter.");
+                        ui.label(i18n.lbl_no_results_yet());
                     }
                 }
                 PanelTab::Plan => {
                     if let Some(plan) = &self.explain_plan {
-                        render_explain(ui, plan);
+                        render_explain(ui, plan, i18n);
                     } else if self.running {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Running EXPLAIN…");
+                            ui.label(i18n.lbl_running_explain());
                         });
                     }
                 }
                 PanelTab::Messages => {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("{} events", self.log.len()))
+                            egui::RichText::new(i18n.lbl_events(self.log.len()))
                                 .small()
                                 .color(egui::Color32::GRAY),
                         );
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.small_button("Clear").clicked() {
+                                if ui.small_button(i18n.btn_clear()).clicked() {
                                     self.log.clear();
                                 }
                             },
@@ -914,7 +1234,7 @@ impl QueryPanel {
                         ui.add_space(12.0);
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                egui::RichText::new("No messages yet.")
+                                egui::RichText::new(i18n.lbl_no_messages())
                                     .color(egui::Color32::GRAY)
                                     .italics(),
                             );
@@ -957,7 +1277,7 @@ impl QueryPanel {
                                         egui::Label::new(
                                             egui::RichText::new(main_line).color(color),
                                         )
-                                        .wrap(true),
+                                        .wrap(),
                                     );
                                     if !rest.is_empty() {
                                         ui.add(
@@ -966,7 +1286,7 @@ impl QueryPanel {
                                                     .small()
                                                     .color(egui::Color32::from_gray(160)),
                                             )
-                                            .wrap(true),
+                                            .wrap(),
                                         );
                                     }
                                 });
@@ -976,7 +1296,7 @@ impl QueryPanel {
                 }
                 PanelTab::History => {
                     ui.horizontal(|ui| {
-                        ui.label("Search:");
+                        ui.label(i18n.label_search());
                         ui.text_edit_singleline(&mut self.history_search);
                     });
                     ui.separator();
@@ -1027,7 +1347,7 @@ impl QueryPanel {
                 let can_prev = page > 0;
                 let can_next = row_count == PAGE_SIZE; // if we got a full page, there may be more
 
-                if ui.add_enabled(can_prev, egui::Button::new("← Prev")).clicked() {
+                if ui.add_enabled(can_prev, egui::Button::new(i18n.btn_prev_page())).clicked() {
                     if let Some(state) = &mut self.browse {
                         state.page -= 1;
                         let sql = state.build_sql();
@@ -1036,9 +1356,9 @@ impl QueryPanel {
                     }
                 }
 
-                ui.label(format!(" Page {} ", page + 1));
+                ui.label(i18n.lbl_page(page + 1));
 
-                if ui.add_enabled(can_next, egui::Button::new("Next →")).clicked() {
+                if ui.add_enabled(can_next, egui::Button::new(i18n.btn_next_page())).clicked() {
                     if let Some(state) = &mut self.browse {
                         state.page += 1;
                         let sql = state.build_sql();
@@ -1049,7 +1369,7 @@ impl QueryPanel {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        egui::RichText::new(format!("{} rows/page", PAGE_SIZE))
+                        egui::RichText::new(i18n.lbl_rows_per_page(PAGE_SIZE))
                             .small()
                             .color(egui::Color32::GRAY),
                     );
@@ -1057,14 +1377,15 @@ impl QueryPanel {
             });
         }
 
-        // Floating popup — rendered last so it draws on top of everything.
+        // Floating popups — rendered last so they draw on top of everything.
         let ctx = ui.ctx().clone();
-        self.show_cell_popup(&ctx);
+        self.show_cell_popup(&ctx, i18n);
+        self.show_col_stats_popup(&ctx, i18n);
     }
 
     // ── Cell value popup ─────────────────────────────────────────────────────
 
-    fn show_cell_popup(&mut self, ctx: &egui::Context) {
+    fn show_cell_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
         let Some(popup) = self.cell_popup.take() else { return };
 
         let mut open = true;
@@ -1094,14 +1415,14 @@ impl QueryPanel {
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Copy").clicked() {
+                    if ui.button(i18n.btn_copy()).clicked() {
                         ctx.copy_text(popup.value.clone());
                     }
-                    if is_browse && ui.button("Edit").clicked() {
+                    if is_browse && ui.button(i18n.btn_edit()).clicked() {
                         start_edit = true;
                     }
                     // Copy as INSERT statement
-                    if ui.button("Copy as INSERT").on_hover_text("Copy the entire row as an INSERT statement").clicked() {
+                    if ui.button(i18n.btn_copy_as_insert()).on_hover_text(i18n.hover_copy_insert()).clicked() {
                         if let Some(result) = &self.result {
                             let cols: Vec<&str> =
                                 result.columns.iter().map(|c| c.as_str()).collect();
@@ -1137,14 +1458,11 @@ impl QueryPanel {
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            if ui.button("Close").clicked() {
+                            if ui.button(i18n.btn_close()).clicked() {
                                 close_clicked = true;
                             }
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "{} chars",
-                                    popup.value.chars().count()
-                                ))
+                                egui::RichText::new(i18n.lbl_chars(popup.value.chars().count()))
                                 .small()
                                 .color(egui::Color32::GRAY),
                             );
@@ -1159,6 +1477,86 @@ impl QueryPanel {
             self.edit_needs_focus = true;
         } else if open && !close_clicked {
             self.cell_popup = Some(popup);
+        }
+    }
+
+    // ── Column stats popup ────────────────────────────────────────────────────
+
+    fn show_col_stats_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
+        let Some(stats) = self.col_stats.take() else { return };
+        let mut open = true;
+
+        egui::Window::new(i18n.col_stats_title(&stats.col_name))
+            .collapsible(false)
+            .resizable(false)
+            .min_width(260.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                let null_pct = if stats.total > 0 {
+                    stats.null_count as f64 / stats.total as f64 * 100.0
+                } else {
+                    0.0
+                };
+
+                egui::Grid::new("col_stats_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(i18n.col_stats_total()).strong());
+                        ui.label(format!("{}", stats.total));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new(i18n.col_stats_null()).strong());
+                        ui.label(format!("{} ({:.1}%)", stats.null_count, null_pct));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new(i18n.col_stats_distinct()).strong());
+                        ui.label(format!("{}", stats.distinct));
+                        ui.end_row();
+
+                        if let Some(min) = stats.min_len {
+                            ui.label(egui::RichText::new(i18n.col_stats_min_len()).strong());
+                            ui.label(format!("{min}"));
+                            ui.end_row();
+                        }
+                        if let Some(max) = stats.max_len {
+                            ui.label(egui::RichText::new(i18n.col_stats_max_len()).strong());
+                            ui.label(format!("{max}"));
+                            ui.end_row();
+                        }
+                    });
+
+                if !stats.top_values.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new(i18n.col_stats_top_values()).strong());
+                    ui.add_space(2.0);
+                    for (val, count) in &stats.top_values {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("×{count}"))
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(100, 180, 100)),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(val).monospace()
+                                )
+                                .truncate(),
+                            );
+                        });
+                    }
+                }
+
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(i18n.col_stats_source_note())
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+            });
+
+        if open {
+            self.col_stats = Some(stats);
         }
     }
 
@@ -1187,9 +1585,8 @@ impl QueryPanel {
             .unwrap_or_default();
 
         if pk_cols.is_empty() {
-            self.push_log(LogEntry::warning(format!(
-                "Cannot edit: no primary key found on \"{schema}\".\"{table}\""
-            )));
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::warning(i18n.warn_no_pk(&schema, &table)));
             self.active_tab = PanelTab::Messages;
             return;
         }
@@ -1244,6 +1641,14 @@ impl QueryPanel {
 }
 
 /// Native save-file dialog via `rfd`. Falls back to home dir if dialog is cancelled.
+fn pick_open_sql_file() -> Option<String> {
+    rfd::FileDialog::new()
+        .add_filter("SQL files", &["sql"])
+        .add_filter("All files", &["*"])
+        .pick_file()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 fn pick_save_path(ext: &str) -> Option<String> {
     let filter_name = match ext {
         "csv" => "CSV files",

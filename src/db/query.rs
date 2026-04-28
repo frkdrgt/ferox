@@ -4,7 +4,7 @@ use std::fmt;
 #[derive(Debug, Clone)]
 pub enum CellValue {
     Null,
-    Text(String),
+    Text(Box<str>),
     Integer(i64),
     Float(f64),
     Boolean(bool),
@@ -47,7 +47,7 @@ pub fn parse_text_cell(s: &str) -> CellValue {
     if let Ok(f) = s.parse::<f64>() {
         return CellValue::Float(f);
     }
-    CellValue::Text(s.to_owned())
+    CellValue::Text(s.into())
 }
 
 /// Result of a query execution.

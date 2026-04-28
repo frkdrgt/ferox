@@ -1,6 +1,7 @@
 use egui::{Color32, RichText};
 
 use crate::db::metadata::ColumnInfo;
+use crate::i18n::I18n;
 
 const PG_TYPES: &[&str] = &[
     "integer",
@@ -139,12 +140,12 @@ impl TableDialog {
     }
 
     /// Call once per frame from the egui update loop.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<TableDialogAction> {
+    pub fn show(&mut self, ctx: &egui::Context, i18n: &I18n) -> Option<TableDialogAction> {
         if !self.open {
             return None;
         }
 
-        let title = if self.mode == Mode::New { "New Table" } else { "Edit Table" };
+        let title = if self.mode == Mode::New { i18n.td_title_new() } else { i18n.td_title_edit() };
         let mut open = self.open;
         let mut pending: Option<TableDialogAction> = None;
 
@@ -156,8 +157,8 @@ impl TableDialog {
             .open(&mut open)
             .show(ctx, |ui| {
                 pending = match self.mode {
-                    Mode::New => self.show_new(ui),
-                    Mode::Edit => self.show_edit(ui),
+                    Mode::New => self.show_new(ui, i18n),
+                    Mode::Edit => self.show_edit(ui, i18n),
                 };
             });
 
@@ -173,12 +174,12 @@ impl TableDialog {
 
     // ── New Table ─────────────────────────────────────────────────────────────
 
-    fn show_new(&mut self, ui: &mut egui::Ui) -> Option<TableDialogAction> {
+    fn show_new(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> Option<TableDialogAction> {
         egui::Grid::new("nt_meta")
             .num_columns(2)
             .spacing([8.0, 6.0])
             .show(ui, |ui| {
-                ui.label("Schema:");
+                ui.label(i18n.td_label_schema());
                 egui::ComboBox::from_id_source("nt_schema")
                     .selected_text(&self.schema)
                     .show_ui(ui, |ui| {
@@ -188,27 +189,27 @@ impl TableDialog {
                     });
                 ui.end_row();
 
-                ui.label("Table name:");
+                ui.label(i18n.td_label_table_name());
                 ui.add(
                     egui::TextEdit::singleline(&mut self.table_name)
                         .desired_width(220.0)
-                        .hint_text("e.g. users"),
+                        .hint_text(i18n.td_hint_table_name()),
                 );
                 ui.end_row();
             });
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Columns").strong());
-            if ui.small_button("  + Add column  ").clicked() {
+            ui.label(RichText::new(i18n.td_lbl_columns()).strong());
+            if ui.small_button(i18n.td_btn_add_column()).clicked() {
                 self.columns.push(ColumnDef::default());
                 self.error.clear();
             }
         });
         ui.add_space(4.0);
 
-        render_column_defs(ui, "nc", &mut self.columns, true);
-        self.render_preview(ui, true);
+        render_column_defs(ui, "nc", &mut self.columns, true, i18n);
+        self.render_preview(ui, true, i18n);
 
         if !self.error.is_empty() {
             ui.add_space(4.0);
@@ -221,12 +222,12 @@ impl TableDialog {
 
         let mut result = None;
         ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
+            if ui.button(i18n.btn_cancel()).clicked() {
                 self.open = false;
             }
             ui.add_space(8.0);
-            if ui.button(RichText::new("  Create Table  ").strong()).clicked() {
-                match self.validate_and_build_create() {
+            if ui.button(RichText::new(i18n.td_btn_create()).strong()).clicked() {
+                match self.validate_and_build_create(i18n) {
                     Ok(sql) => {
                         result = Some(TableDialogAction::ExecuteDdl {
                             refresh_schema: self.schema.clone(),
@@ -244,9 +245,9 @@ impl TableDialog {
 
     // ── Edit Table ────────────────────────────────────────────────────────────
 
-    fn show_edit(&mut self, ui: &mut egui::Ui) -> Option<TableDialogAction> {
+    fn show_edit(&mut self, ui: &mut egui::Ui, i18n: &I18n) -> Option<TableDialogAction> {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Table:").strong());
+            ui.label(RichText::new(i18n.td_lbl_table_label()).strong());
             ui.label(
                 RichText::new(format!("{}.{}", self.schema, self.table_name))
                     .monospace()
@@ -255,12 +256,12 @@ impl TableDialog {
         });
 
         ui.add_space(8.0);
-        ui.label(RichText::new("Existing Columns").strong());
+        ui.label(RichText::new(i18n.td_lbl_existing_cols()).strong());
         ui.add_space(4.0);
 
         if self.existing.is_empty() {
             ui.label(
-                RichText::new("(no columns loaded)")
+                RichText::new(i18n.td_lbl_no_cols())
                     .small()
                     .color(Color32::from_gray(100)),
             );
@@ -278,12 +279,12 @@ impl TableDialog {
                             // Header row
                             let hc = Color32::from_gray(150);
                             ui.add(egui::Label::new(
-                                RichText::new("Name").small().strong().color(hc),
-                            ).wrap(false));
+                                RichText::new(i18n.td_col_name()).small().strong().color(hc),
+                            ).truncate());
                             ui.add_sized(
                                 [140.0, 14.0],
                                 egui::Label::new(
-                                    RichText::new("Type").small().strong().color(hc),
+                                    RichText::new(i18n.td_col_type()).small().strong().color(hc),
                                 ),
                             );
                             ui.add_sized(
@@ -295,7 +296,7 @@ impl TableDialog {
                             ui.add_sized(
                                 [36.0, 14.0],
                                 egui::Label::new(
-                                    RichText::new("Drop")
+                                    RichText::new(i18n.td_col_drop())
                                         .small()
                                         .strong()
                                         .color(Color32::from_rgb(180, 70, 70)),
@@ -360,8 +361,8 @@ impl TableDialog {
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Add Columns").strong());
-            if ui.small_button("  + Add column  ").clicked() {
+            ui.label(RichText::new(i18n.td_lbl_add_columns()).strong());
+            if ui.small_button(i18n.td_btn_add_column()).clicked() {
                 self.new_cols.push(ColumnDef::default());
                 self.error.clear();
             }
@@ -370,16 +371,16 @@ impl TableDialog {
         if self.new_cols.is_empty() {
             ui.add_space(2.0);
             ui.label(
-                RichText::new("No new columns to add.")
+                RichText::new(i18n.td_lbl_no_new_cols())
                     .small()
                     .color(Color32::from_gray(100)),
             );
         } else {
             ui.add_space(4.0);
-            render_column_defs(ui, "ac", &mut self.new_cols, false);
+            render_column_defs(ui, "ac", &mut self.new_cols, false, i18n);
         }
 
-        self.render_preview(ui, false);
+        self.render_preview(ui, false, i18n);
 
         if !self.error.is_empty() {
             ui.add_space(4.0);
@@ -392,12 +393,12 @@ impl TableDialog {
 
         let mut result = None;
         ui.horizontal(|ui| {
-            if ui.button("Cancel").clicked() {
+            if ui.button(i18n.btn_cancel()).clicked() {
                 self.open = false;
             }
             ui.add_space(8.0);
-            if ui.button(RichText::new("  Apply Changes  ").strong()).clicked() {
-                match self.validate_and_build_alter() {
+            if ui.button(RichText::new(i18n.td_btn_apply()).strong()).clicked() {
+                match self.validate_and_build_alter(i18n) {
                     Ok(sql) => {
                         result = Some(TableDialogAction::ExecuteDdl {
                             refresh_schema: self.schema.clone(),
@@ -415,10 +416,10 @@ impl TableDialog {
 
     // ── Preview / error rendering ─────────────────────────────────────────────
 
-    fn render_preview(&mut self, ui: &mut egui::Ui, is_new: bool) {
+    fn render_preview(&mut self, ui: &mut egui::Ui, is_new: bool, i18n: &I18n) {
         ui.add_space(6.0);
         if ui
-            .small_button(if self.show_preview { "▾ Hide SQL" } else { "▸ Preview SQL" })
+            .small_button(if self.show_preview { i18n.td_btn_preview_hide() } else { i18n.td_btn_preview_show() })
             .clicked()
         {
             self.show_preview = !self.show_preview;
@@ -440,35 +441,35 @@ impl TableDialog {
 
     // ── Validation ────────────────────────────────────────────────────────────
 
-    fn validate_and_build_create(&mut self) -> Result<String, String> {
+    fn validate_and_build_create(&mut self, i18n: &I18n) -> Result<String, String> {
         self.error.clear();
         if self.table_name.trim().is_empty() {
-            return Err("Table name is required.".to_owned());
+            return Err(i18n.td_err_table_name_required().to_owned());
         }
         for (i, col) in self.columns.iter().enumerate() {
             if col.name.trim().is_empty() {
-                return Err(format!("Column {} name is required.", i + 1));
+                return Err(i18n.td_err_col_name_required(i + 1));
             }
             if col.data_type.trim().is_empty() {
-                return Err(format!("Column '{}' has no type.", col.name));
+                return Err(i18n.td_err_col_no_type(&col.name));
             }
         }
         Ok(self.build_create_sql())
     }
 
-    fn validate_and_build_alter(&mut self) -> Result<String, String> {
+    fn validate_and_build_alter(&mut self, i18n: &I18n) -> Result<String, String> {
         self.error.clear();
         for col in &self.new_cols {
             if col.name.trim().is_empty() {
-                return Err("New column name is required.".to_owned());
+                return Err(i18n.td_err_new_col_name_required().to_owned());
             }
             if col.data_type.trim().is_empty() {
-                return Err(format!("New column '{}' has no type.", col.name));
+                return Err(i18n.td_err_col_no_type(&col.name));
             }
         }
         let sql = self.build_alter_sql();
         if sql.trim().is_empty() {
-            return Err("No changes detected.".to_owned());
+            return Err(i18n.td_err_no_changes().to_owned());
         }
         Ok(sql)
     }
@@ -569,6 +570,7 @@ fn render_column_defs(
     id_prefix: &str,
     columns: &mut Vec<ColumnDef>,
     show_pk: bool,
+    i18n: &I18n,
 ) {
     let num_cols = if show_pk { 6 } else { 5 };
     let mut to_delete: Option<usize> = None;
@@ -588,15 +590,15 @@ fn render_column_defs(
                     let hc = Color32::from_gray(150);
                     ui.add(
                         egui::Label::new(
-                            RichText::new("Name").small().strong().color(hc),
+                            RichText::new(i18n.td_col_name()).small().strong().color(hc),
                         )
-                        .wrap(false),
+                        .truncate(),
                     );
                     // Force Type column to match ComboBox minimum width
                     ui.add_sized(
                         [140.0, 14.0],
                         egui::Label::new(
-                            RichText::new("Type").small().strong().color(hc),
+                            RichText::new(i18n.td_col_type()).small().strong().color(hc),
                         ),
                     );
                     ui.add_sized(
@@ -616,7 +618,7 @@ fn render_column_defs(
                     ui.add_sized(
                         [88.0, 14.0],
                         egui::Label::new(
-                            RichText::new("Default").small().strong().color(hc),
+                            RichText::new(i18n.td_col_default()).small().strong().color(hc),
                         ),
                     );
                     ui.label(""); // delete col
