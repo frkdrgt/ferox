@@ -334,6 +334,10 @@ impl PgClientApp {
                             let _ = conn.db_tx.send(DbCommand::LoadDashboard);
                         }
                     }
+                    DbEvent::DdlText(text) => {
+                        self.tab_manager.new_tab(conn_id);
+                        self.tab_manager.set_sql(text);
+                    }
                     DbEvent::DdlDone => {
                         if let Some(schema) = self.connections[i].pending_ddl_schema.take() {
                             let _ = self.connections[i]
@@ -1052,6 +1056,11 @@ impl eframe::App for PgClientApp {
                         }
                         SidebarAction::SetSql(sql) => {
                             self.tab_manager.set_sql(sql);
+                        }
+                        SidebarAction::FetchDdl(sql) => {
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let _ = conn.db_tx.send(DbCommand::FetchDdlText(sql));
+                            }
                         }
                         SidebarAction::GenerateScript { schema, table, kind } => {
                             let details = self

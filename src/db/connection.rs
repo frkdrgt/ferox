@@ -47,6 +47,8 @@ pub enum DbCommand {
     LoadFullSchemaForAi { request_id: u64 },
     /// Load all column names for a schema in one query (for autocomplete preload).
     LoadSchemaColumns { schema: String },
+    /// Run SQL, extract first cell as plain text, emit DdlText (used for Show DDL).
+    FetchDdlText(String),
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -90,6 +92,8 @@ pub enum DbEvent {
     AiSchemaReady { request_id: u64, context: String },
     /// All column names per table for a schema (autocomplete preload).
     SchemaColumns { schema: String, columns: HashMap<String, Vec<String>> },
+    /// DDL source text fetched for Show DDL — opens in a new query tab.
+    DdlText(String),
     /// A safe-mode transaction was opened (BEGIN succeeded).
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
@@ -244,6 +248,30 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             Ok(mut result) => {
                                 result.elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
                                 let _ = evt_tx.send(DbEvent::QueryResult(result));
+                            }
+                            Err(e) => {
+                                let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));
+                            }
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::QueryError("Not connected".into()));
+                }
+            }
+
+            DbCommand::FetchDdlText(sql) => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        match execute_query(c, &sql).await {
+                            Ok(result) => {
+                                let text = result.rows.first()
+                                    .and_then(|row| row.first())
+                                    .map(|cell| match cell {
+                                        crate::db::query::CellValue::Text(s) => s.to_string(),
+                                        other => format!("{other}"),
+                                    })
+                                    .unwrap_or_default();
+                                let _ = evt_tx.send(DbEvent::DdlText(text));
                             }
                             Err(e) => {
                                 let _ = evt_tx.send(DbEvent::QueryError(fmt_pg_error(&e)));

@@ -25,6 +25,8 @@ pub enum SidebarAction {
     /// Paste SQL into the active editor without executing.
     SetSql(String),
     RunSql(String),
+    /// Run SQL, extract first cell as DDL text, open in new query tab.
+    FetchDdl(String),
     NewTable { schema: String },
     EditTable { schema: String, table: String },
     ViewErDiagram { schema: String },
@@ -721,7 +723,7 @@ impl Sidebar {
                                                     schema_name
                                                 ),
                                             };
-                                            actions.push(SidebarAction::RunSql(sql));
+                                            actions.push(SidebarAction::FetchDdl(sql));
                                             ui.close_menu();
                                         }
                                     }
@@ -843,21 +845,22 @@ impl Sidebar {
                                         );
                                         ui.separator();
                                         if ui.button(i18n.fn_show_definition()).clicked() {
-                                            // Paste a query that retrieves the source.
-                                            let sql = if func_kind == FunctionKind::Aggregate {
-                                                format!(
+                                            if func_kind == FunctionKind::Aggregate {
+                                                // Aggregates have no pg_get_functiondef — paste query to editor.
+                                                let sql = format!(
                                                     "-- Aggregate functions do not have a pg_get_functiondef\n\
                                                      SELECT p.proname, p.prokind\n\
                                                      FROM pg_proc p\n\
                                                      JOIN pg_namespace n ON p.pronamespace = n.oid\n\
                                                      WHERE n.nspname = '{sn}' AND p.proname = '{func_name}';"
-                                                )
+                                                );
+                                                actions.push(SidebarAction::SetSql(sql));
                                             } else {
-                                                format!(
+                                                let sql = format!(
                                                     "SELECT pg_get_functiondef('{sn}.{func_name}({func_args})'::regprocedure);"
-                                                )
-                                            };
-                                            actions.push(SidebarAction::SetSql(sql));
+                                                );
+                                                actions.push(SidebarAction::FetchDdl(sql));
+                                            }
                                             ui.close_menu();
                                         }
                                         if func_kind != FunctionKind::Aggregate

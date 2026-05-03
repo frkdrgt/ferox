@@ -3,6 +3,7 @@
 ## [Unreleased] — 2026-04-28
 
 ### Added
+- **DDL viewer in new tab** — "Show DDL" on views/materialised views and "Show Definition" on functions/procedures now open the DDL source in a new query editor tab instead of the result table; the raw definition text is placed directly in the editor for easy editing or copying
 - **Sidebar tree sub-sections** — clicking a table now expands collapsible sub-sections (Columns, Indexes, Foreign Keys) with item counts; sections are independently toggled and default to collapsed
 - **Autocomplete without schema expand** — on schema expand a single `information_schema.columns` query preloads all column names for the schema; columns are immediately available in the SQL editor autocomplete without needing to manually expand each table
 - **Table alias suggestions** — autocomplete appends a short alias derived from the table name (e.g. `tenant_records → tr`, `audit_log → al`); alias hint is shown on the right side of the popup; accepting inserts `table_name alias` ready to use
