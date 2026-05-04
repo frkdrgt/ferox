@@ -1,6 +1,18 @@
 # Changelog
 
-## [Unreleased] — 2026-04-28
+## [0.2.7] — 2026-05-04
+
+### Added
+- **Inline cell editing for all data types** — double-click any cell in the result table to edit; works for all PostgreSQL types via implicit cast (`col = 'value'`); NULL cells display a styled `<null>` label and start with the literal `NULL` in the editor
+- **Edit in query-mode results** — edit button no longer restricted to browse mode; attempting to commit outside browse mode shows a warning in the Messages tab
+
+### Fixed
+- Edit button not appearing on double-click — removed the `is_browse` guard that was incorrectly blocking the edit popup in query results
+- NULL cells opening an empty edit box — edit now initialises with `"NULL"` string so the value is visible and editable
+
+---
+
+## [0.2.6-dev] — 2026-04-28
 
 ### Added
 - **DDL viewer in new tab** — "Show DDL" on views/materialised views and "Show Definition" on functions/procedures now open the DDL source in a new query editor tab instead of the result table; the raw definition text is placed directly in the editor for easy editing or copying

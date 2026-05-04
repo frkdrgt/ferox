@@ -130,8 +130,10 @@ impl LogEntry {
 
 struct CellPopup {
     col_name: String,
-    /// Full string representation of the cell value.
+    /// Full string representation of the cell value (empty for NULL).
     value: String,
+    /// True when the cell was NULL (distinguishes NULL from empty string).
+    is_null: bool,
     /// Position in the result table — used if user clicks "Edit".
     display_row: usize,
     col_idx: usize,
@@ -1141,17 +1143,19 @@ impl QueryPanel {
                         if let Some((row, col)) = output.cell_double_clicked {
                             if let Some(result) = &self.result {
                                 if col < result.columns.len() {
-                                    let col_name =
-                                        result.columns[col].clone();
-                                    let value = result
+                                    let col_name = result.columns[col].clone();
+                                    let cell = result
                                         .rows
                                         .get(sorted_indices[row])
-                                        .and_then(|r| r.get(col))
+                                        .and_then(|r| r.get(col));
+                                    let is_null = cell.map(|c| c.is_null()).unwrap_or(false);
+                                    let value = cell
                                         .map(|c| c.to_string())
                                         .unwrap_or_default();
                                     self.cell_popup = Some(CellPopup {
                                         col_name,
                                         value,
+                                        is_null,
                                         display_row: row,
                                         col_idx: col,
                                         actual_row: sorted_indices[row],
@@ -1391,7 +1395,6 @@ impl QueryPanel {
         let mut open = true;
         let mut start_edit = false;
         let mut close_clicked = false;
-        let is_browse = self.browse.is_some();
 
         egui::Window::new(format!(" {} ", &popup.col_name))
             .collapsible(false)
@@ -1404,13 +1407,26 @@ impl QueryPanel {
                     .auto_shrink([false, false])
                     .max_height(260.0)
                     .show(ui, |ui| {
-                        let mut text = popup.value.clone();
-                        ui.add(
-                            egui::TextEdit::multiline(&mut text)
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace)
-                                .interactive(false),
-                        );
+                        if popup.is_null {
+                            ui.add_space(8.0);
+                            ui.centered_and_justified(|ui| {
+                                ui.label(
+                                    egui::RichText::new("<null>")
+                                        .color(egui::Color32::from_rgb(128, 100, 100))
+                                        .italics()
+                                        .monospace(),
+                                );
+                            });
+                            ui.add_space(8.0);
+                        } else {
+                            let mut text = popup.value.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace)
+                                    .interactive(false),
+                            );
+                        }
                     });
 
                 ui.separator();
@@ -1418,7 +1434,7 @@ impl QueryPanel {
                     if ui.button(i18n.btn_copy()).clicked() {
                         ctx.copy_text(popup.value.clone());
                     }
-                    if is_browse && ui.button(i18n.btn_edit()).clicked() {
+                    if ui.button(i18n.btn_edit()).clicked() {
                         start_edit = true;
                     }
                     // Copy as INSERT statement
@@ -1472,8 +1488,12 @@ impl QueryPanel {
             });
 
         if start_edit {
-            self.edit_state =
-                Some((popup.display_row, popup.col_idx, popup.value));
+            let initial = if popup.is_null {
+                "NULL".to_owned()
+            } else {
+                popup.value.clone()
+            };
+            self.edit_state = Some((popup.display_row, popup.col_idx, initial));
             self.edit_needs_focus = true;
         } else if open && !close_clicked {
             self.cell_popup = Some(popup);
@@ -1574,7 +1594,12 @@ impl QueryPanel {
         // Need browse context.
         let (schema, table) = match &self.browse {
             Some(b) => (b.schema.clone(), b.table.clone()),
-            None => return,
+            None => {
+                let i18n = I18n::new(self.lang);
+                self.push_log(LogEntry::warning(i18n.warn_edit_requires_browse()));
+                self.active_tab = PanelTab::Messages;
+                return;
+            }
         };
 
         // Check we have PK info.

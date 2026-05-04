@@ -269,6 +269,12 @@ impl I18n {
             Lang::Tr => format!("Dosya okunamadı: {e}"),
         }
     }
+    pub fn warn_edit_requires_browse(&self) -> &'static str {
+        self.t(
+            "Cannot edit: open a table from the sidebar first (browse mode required)",
+            "Düzenlenemez: önce kenar çubuğundan bir tablo açın (browse modu gerekli)",
+        )
+    }
     pub fn warn_no_pk(&self, schema: &str, table: &str) -> String {
         match self.0 {
             Lang::En => format!(
