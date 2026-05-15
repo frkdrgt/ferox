@@ -21,6 +21,8 @@ pub struct TableOutput {
     pub edit_cancelled: bool,
     /// Right-click "Statistics" on a column header → column index
     pub col_stats_requested: Option<usize>,
+    /// Right-click "View Full Value" on a cell → (display_row, col_idx)
+    pub full_value_requested: Option<(usize, usize)>,
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -114,6 +116,7 @@ impl<'a> ResultTable<'a> {
         let mut edit_committed_flag = false;
         let mut edit_cancelled_flag = false;
         let mut col_stats_requested: Option<usize> = None;
+        let mut full_value_requested: Option<(usize, usize)> = None;
 
         builder
             .header(24.0, |mut header| {
@@ -191,6 +194,18 @@ impl<'a> ResultTable<'a> {
                                 } else if cell_resp.clicked() {
                                     cell_clicked = Some((actual_idx, col_idx));
                                 }
+                                let cell_str = cell.to_string();
+                                let is_null = matches!(cell, crate::db::query::CellValue::Null);
+                                cell_resp.context_menu(|ui| {
+                                    if ui.button(i18n.cell_view_full()).clicked() {
+                                        full_value_requested = Some((display_idx, col_idx));
+                                        ui.close_menu();
+                                    }
+                                    if !is_null && ui.button(i18n.cell_copy_value()).clicked() {
+                                        ui.ctx().copy_text(cell_str.clone());
+                                        ui.close_menu();
+                                    }
+                                });
                             }
                         });
                     }
@@ -215,6 +230,7 @@ impl<'a> ResultTable<'a> {
                 sort_changed: Some((self.result.columns[col].clone(), asc)),
                 cell_clicked,
                 col_stats_requested,
+                full_value_requested,
                 ..Default::default()
             };
         }
@@ -241,6 +257,7 @@ impl<'a> ResultTable<'a> {
             edit_committed,
             edit_cancelled: edit_cancelled_flag,
             col_stats_requested,
+            full_value_requested,
         }
     }
 

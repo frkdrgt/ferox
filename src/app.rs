@@ -259,13 +259,14 @@ impl PgClientApp {
                             schema,
                         });
                     }
-                    DbEvent::TableDetails { schema, table, columns, indexes, foreign_keys } => {
+                    DbEvent::TableDetails { schema, table, columns, indexes, foreign_keys, triggers } => {
                         self.connections[i].sidebar.set_table_details(
                             &schema,
                             &table,
                             columns.clone(),
                             indexes.clone(),
                             foreign_keys,
+                            triggers,
                         );
 
                         // Fulfil a pending script request if this is the right table.
@@ -307,6 +308,9 @@ impl PgClientApp {
                     }
                     DbEvent::Functions { schema, functions } => {
                         self.connections[i].sidebar.set_functions(&schema, functions);
+                    }
+                    DbEvent::SequencesLoaded { schema, sequences } => {
+                        self.connections[i].sidebar.set_sequences(&schema, sequences);
                     }
                     DbEvent::SchemaColumns { schema, columns } => {
                         self.connections[i].sidebar.set_schema_columns(&schema, columns);
@@ -1031,6 +1035,11 @@ impl eframe::App for PgClientApp {
                         SidebarAction::LoadFunctions(schema) => {
                             if let Some(conn) = self.connections.get(self.active_conn) {
                                 let _ = conn.db_tx.send(DbCommand::LoadFunctions { schema });
+                            }
+                        }
+                        SidebarAction::LoadSequences(schema) => {
+                            if let Some(conn) = self.connections.get(self.active_conn) {
+                                let _ = conn.db_tx.send(DbCommand::LoadSequences { schema });
                             }
                         }
                         SidebarAction::LoadDetails { schema, table } => {

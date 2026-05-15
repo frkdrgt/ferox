@@ -305,8 +305,18 @@ impl I18n {
     pub fn kind_mat_views(&self) -> &'static str { self.t("MAT VIEWS", "MAT GÖRÜNÜMLER") }
     pub fn kind_foreign_tables(&self) -> &'static str { self.t("FOREIGN TABLES", "YABANCI TABLOLAR") }
     pub fn kind_functions(&self) -> &'static str { self.t("FUNCTIONS", "FONKSİYONLAR") }
+    pub fn kind_triggers(&self) -> &'static str { self.t("TRIGGERS", "TETİKLEYİCİLER") }
+    pub fn kind_sequences(&self) -> &'static str { self.t("SEQUENCES", "SIRALAR") }
     pub fn fn_show_definition(&self) -> &'static str { self.t("Show Definition", "Tanımı Göster") }
     pub fn fn_copy_call(&self) -> &'static str { self.t("Copy Call", "Çağrıyı Kopyala") }
+    pub fn seq_set_value(&self) -> &'static str { self.t("Set Value…", "Değer Ata…") }
+    pub fn seq_show_ddl(&self) -> &'static str { self.t("Show DDL", "DDL Göster") }
+    pub fn cell_view_full(&self) -> &'static str { self.t("View Full Value", "Tam Değeri Göster") }
+    pub fn cell_copy_value(&self) -> &'static str { self.t("Copy Value", "Değeri Kopyala") }
+    pub fn browse_filter_hint(&self) -> &'static str {
+        self.t("id > 100  OR  name LIKE '%foo%'", "id > 100  VEYA  name LIKE '%foo%'")
+    }
+    pub fn btn_apply_filter(&self) -> &'static str { self.t("Filter", "Filtrele") }
     pub fn schema_menu_new_table(&self) -> &'static str { self.t("＋  New Table…", "＋  Yeni Tablo…") }
     pub fn schema_menu_er(&self) -> &'static str { self.t("📐  View ER Diagram", "📐  ER Diyagramını Gör") }
     pub fn schema_menu_refresh(&self) -> &'static str { self.t("↺  Refresh", "↺  Yenile") }

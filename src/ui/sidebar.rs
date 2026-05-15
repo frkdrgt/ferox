@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Sense, Vec2};
 
-use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, FunctionInfo, FunctionKind, IndexInfo, SchemaInfo, TableInfo, TableKind};
+use crate::db::metadata::{ColumnInfo, ForeignKeyInfo, FunctionInfo, FunctionKind, IndexInfo, SchemaInfo, SequenceInfo, TableInfo, TableKind, TriggerInfo};
 use crate::i18n::I18n;
 
 /// Script kinds for the Generate Script menu.
@@ -20,6 +20,7 @@ pub enum ScriptKind {
 pub enum SidebarAction {
     LoadTables(String),
     LoadFunctions(String),
+    LoadSequences(String),
     LoadDetails { schema: String, table: String },
     BrowseTable { schema: String, table: String },
     /// Paste SQL into the active editor without executing.
@@ -194,6 +195,7 @@ pub struct TableDetailCache {
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub triggers: Vec<TriggerInfo>,
     pub loaded: bool,
 }
 
@@ -209,8 +211,8 @@ pub struct Sidebar {
     tables_loaded_at: HashMap<String, Instant>,
     expanded: HashMap<String, bool>,
     expanded_tables: HashMap<(String, String), bool>,
-    /// Per-table sub-section expand state: (schema, table) → [cols_open, idx_open, fk_open].
-    expanded_sections: HashMap<(String, String), [bool; 3]>,
+    /// Per-table sub-section expand state: (schema, table) → [cols_open, idx_open, fk_open, trg_open].
+    expanded_sections: HashMap<(String, String), [bool; 4]>,
     table_details: HashMap<(String, String), TableDetailCache>,
     /// Column names per table loaded in bulk for autocomplete: schema → table → [col].
     schema_columns: HashMap<String, HashMap<String, Vec<String>>>,
@@ -220,6 +222,10 @@ pub struct Sidebar {
     functions: HashMap<String, Vec<FunctionInfo>>,
     /// Whether the FUNCTIONS section is expanded per schema.
     expanded_functions: HashMap<String, bool>,
+    /// Sequences per schema (lazy-loaded alongside tables).
+    sequences: HashMap<String, Vec<SequenceInfo>>,
+    /// Whether the SEQUENCES section is expanded per schema.
+    expanded_sequences: HashMap<String, bool>,
     /// Schemas currently being refreshed in the background (stale data still shown).
     refreshing: std::collections::HashSet<String>,
     /// Set when tables/columns change — triggers a single autocomplete rebuild.
@@ -238,6 +244,8 @@ impl Sidebar {
         self.schema_columns.clear();
         self.functions.clear();
         self.expanded_functions.clear();
+        self.sequences.clear();
+        self.expanded_sequences.clear();
         self.refreshing.clear();
         self.selected = None;
         self.completion_dirty = true;
@@ -250,6 +258,10 @@ impl Sidebar {
 
     pub fn set_functions(&mut self, schema: &str, functions: Vec<FunctionInfo>) {
         self.functions.insert(schema.to_owned(), functions);
+    }
+
+    pub fn set_sequences(&mut self, schema: &str, sequences: Vec<SequenceInfo>) {
+        self.sequences.insert(schema.to_owned(), sequences);
     }
 
     pub fn set_schemas(&mut self, schemas: Vec<SchemaInfo>) {
@@ -365,10 +377,11 @@ impl Sidebar {
         columns: Vec<ColumnInfo>,
         indexes: Vec<IndexInfo>,
         foreign_keys: Vec<ForeignKeyInfo>,
+        triggers: Vec<TriggerInfo>,
     ) {
         self.table_details.insert(
             (schema.to_owned(), table.to_owned()),
-            TableDetailCache { columns, indexes, foreign_keys, loaded: true },
+            TableDetailCache { columns, indexes, foreign_keys, triggers, loaded: true },
         );
         self.completion_dirty = true;
     }
@@ -389,7 +402,8 @@ impl Sidebar {
                 self.tables_loaded_at.remove(&schema_name);
                 self.refreshing.insert(schema_name.clone());
                 actions.push(SidebarAction::LoadTables(schema_name.clone()));
-                actions.push(SidebarAction::LoadFunctions(schema_name));
+                actions.push(SidebarAction::LoadFunctions(schema_name.clone()));
+                actions.push(SidebarAction::LoadSequences(schema_name));
             }
         }
 
@@ -526,6 +540,9 @@ impl Sidebar {
                             if !self.functions.contains_key(&schema.name) {
                                 actions.push(SidebarAction::LoadFunctions(schema.name.clone()));
                             }
+                            if !self.sequences.contains_key(&schema.name) {
+                                actions.push(SidebarAction::LoadSequences(schema.name.clone()));
+                            }
                         }
                     }
 
@@ -549,8 +566,10 @@ impl Sidebar {
                         }
                         if ui.button(i18n.schema_menu_refresh()).clicked() {
                             self.functions.remove(&schema_name_for_menu);
+                            self.sequences.remove(&schema_name_for_menu);
                             actions.push(SidebarAction::LoadTables(schema_name_for_menu.clone()));
                             actions.push(SidebarAction::LoadFunctions(schema_name_for_menu.clone()));
+                            actions.push(SidebarAction::LoadSequences(schema_name_for_menu.clone()));
                             ui.close_menu();
                         }
                     });
@@ -568,7 +587,20 @@ impl Sidebar {
                         })
                         .unwrap_or_default();
 
-                    if !is_expanded || (visible.is_empty() && visible_funcs.is_empty()) {
+                    let visible_seqs: Vec<&SequenceInfo> = self
+                        .sequences
+                        .get(&schema.name)
+                        .map(|seqs| {
+                            seqs.iter()
+                                .filter(|s| {
+                                    filter.is_empty()
+                                        || s.name.to_lowercase().contains(&filter)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    if !is_expanded || (visible.is_empty() && visible_funcs.is_empty() && visible_seqs.is_empty()) {
                         continue;
                     }
 
@@ -770,19 +802,21 @@ impl Sidebar {
 
                                 // Sub-items when expanded
                                 if is_table_expanded {
-                                    // Single lookup: [cols_open, idx_open, fk_open]
-                                    let [sec_cols, sec_idx, sec_fk] =
-                                        *self.expanded_sections.get(&key).unwrap_or(&[false; 3]);
+                                    // Single lookup: [cols_open, idx_open, fk_open, trg_open]
+                                    let [sec_cols, sec_idx, sec_fk, sec_trg] =
+                                        *self.expanded_sections.get(&key).unwrap_or(&[false; 4]);
 
                                     let id_cols = egui::Id::new((&key.0, &key.1, "sec_cols"));
                                     let id_idx  = egui::Id::new((&key.0, &key.1, "sec_idx"));
                                     let id_fk   = egui::Id::new((&key.0, &key.1, "sec_fk"));
+                                    let id_trg  = egui::Id::new((&key.0, &key.1, "sec_trg"));
 
                                     let toggled = ui.indent(egui::Id::new(&key), |ui| {
                                         render_table_details(
                                             ui, &details,
-                                            sec_cols, sec_idx, sec_fk,
-                                            id_cols, id_idx, id_fk,
+                                            sec_cols, sec_idx, sec_fk, sec_trg,
+                                            id_cols, id_idx, id_fk, id_trg,
+                                            i18n,
                                         )
                                     }).inner;
 
@@ -790,13 +824,89 @@ impl Sidebar {
                                         let idx = match sec_str.as_str() {
                                             "cols" => 0,
                                             "idx"  => 1,
-                                            _      => 2,
+                                            "fk"   => 2,
+                                            _      => 3,
                                         };
                                         let secs = self.expanded_sections
                                             .entry(key.clone())
-                                            .or_insert([false; 3]);
+                                            .or_insert([false; 4]);
                                         secs[idx] = !secs[idx];
                                     }
+                                }
+                            }
+                        }
+
+                        // ── SEQUENCES section ──────────────────────────────
+                        if !visible_seqs.is_empty() {
+                            let seq_expanded = *self
+                                .expanded_sequences
+                                .get(&schema.name)
+                                .unwrap_or(&false);
+
+                            ui.add_space(4.0);
+                            let hdr_resp = render_kind_header_clickable(
+                                ui,
+                                i18n.kind_sequences(),
+                                visible_seqs.len(),
+                                seq_expanded,
+                            );
+                            if hdr_resp.clicked() {
+                                let e = self
+                                    .expanded_sequences
+                                    .entry(schema.name.clone())
+                                    .or_insert(false);
+                                *e = !*e;
+                            }
+
+                            if seq_expanded {
+                                let schema_name = schema.name.clone();
+                                for seq in &visible_seqs {
+                                    let seq_name = seq.name.clone();
+                                    let sn = schema_name.clone();
+                                    let resp = render_sequence_row(
+                                        ui,
+                                        seq,
+                                        egui::Id::new((&sn, &seq_name, "seq")),
+                                    );
+                                    resp.context_menu(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("{sn}.{seq_name}"))
+                                                .strong()
+                                                .small(),
+                                        );
+                                        ui.separator();
+                                        if ui.button(i18n.seq_set_value()).clicked() {
+                                            let sql = format!(
+                                                "-- Set next value for sequence\n\
+                                                 SELECT setval('\"{sn}\".\"{seq_name}\"', 1, false);\n\
+                                                 -- Change 1 to desired value; third arg false = next nextval() returns that value"
+                                            );
+                                            actions.push(SidebarAction::SetSql(sql));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.seq_show_ddl()).clicked() {
+                                            let sql = format!(
+                                                "SELECT 'CREATE SEQUENCE \"{sn}\".\"{seq_name}\"' ||\
+                                                 ' INCREMENT BY ' || increment ||\
+                                                 ' MINVALUE ' || minimum_value ||\
+                                                 ' MAXVALUE ' || maximum_value ||\
+                                                 ' START WITH ' || start_value ||\
+                                                 CASE cycle_option WHEN 'YES' THEN ' CYCLE' ELSE ' NO CYCLE' END\
+                                                 || ';' AS ddl\
+                                                 FROM information_schema.sequences\
+                                                 WHERE sequence_schema = '{sn}' AND sequence_name = '{seq_name}';"
+                                            );
+                                            actions.push(SidebarAction::FetchDdl(sql));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.table_menu_count()).clicked() {
+                                            let sql = format!(
+                                                "SELECT last_value, is_called FROM \"{sn}\".\"{seq_name}\";"
+                                            );
+                                            actions.push(SidebarAction::RunSql(sql));
+                                            ui.close_menu();
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -836,6 +946,7 @@ impl Sidebar {
                                     let func_args = func.args.clone();
                                     let func_ret  = func.return_type.clone();
                                     let func_kind = func.kind.clone();
+                                    let func_oid  = func.oid;
                                     let sn = schema_name.clone();
                                     resp.context_menu(|ui| {
                                         ui.label(
@@ -857,7 +968,7 @@ impl Sidebar {
                                                 actions.push(SidebarAction::SetSql(sql));
                                             } else {
                                                 let sql = format!(
-                                                    "SELECT pg_get_functiondef('{sn}.{func_name}({func_args})'::regprocedure);"
+                                                    "SELECT pg_get_functiondef({func_oid}::oid);"
                                                 );
                                                 actions.push(SidebarAction::FetchDdl(sql));
                                             }
@@ -1017,9 +1128,12 @@ fn render_table_details(
     sec_cols: bool,
     sec_idx: bool,
     sec_fk: bool,
+    sec_trg: bool,
     id_cols: egui::Id,
     id_idx: egui::Id,
     id_fk: egui::Id,
+    id_trg: egui::Id,
+    i18n: &crate::i18n::I18n,
 ) -> Vec<String> {
     let mut toggled: Vec<String> = Vec::new();
 
@@ -1089,7 +1203,29 @@ fn render_table_details(
         }
     }
 
-    if d.columns.is_empty() && d.indexes.is_empty() && d.foreign_keys.is_empty() {
+    // Triggers section
+    if !d.triggers.is_empty() {
+        let label = i18n.kind_triggers();
+        let resp = render_detail_section_header(ui, label, d.triggers.len(), sec_trg, id_trg);
+        if resp.clicked() { toggled.push("trg".to_owned()); }
+        if sec_trg {
+            ui.indent(id_trg.with("content"), |ui| {
+                for trg in &d.triggers {
+                    let dim = if trg.enabled { Color32::from_gray(140) } else { Color32::from_gray(80) };
+                    let label = format!("{} {} {} → {}()",
+                        trg.name, trg.timing, trg.event, trg.function_name);
+                    ui.label(
+                        RichText::new(label)
+                            .small()
+                            .monospace()
+                            .color(dim),
+                    );
+                }
+            });
+        }
+    }
+
+    if d.columns.is_empty() && d.indexes.is_empty() && d.foreign_keys.is_empty() && d.triggers.is_empty() {
         ui.label(RichText::new("(empty)").small().color(Color32::from_gray(70)));
     }
 
@@ -1276,6 +1412,66 @@ fn render_function_row(
                     .color(Color32::from_gray(140)),
             );
         }
+    })
+}
+
+const COLOR_SEQUENCE: Color32 = Color32::from_rgb(220, 170, 80); // amber
+
+fn render_sequence_row(
+    ui: &mut egui::Ui,
+    seq: &SequenceInfo,
+    id: egui::Id,
+) -> egui::Response {
+    let available_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 20.0), Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let bg = if resp.hovered() {
+            Color32::from_rgb(55, 59, 63)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 0.0, bg);
+
+        painter.text(
+            rect.left_center() + Vec2::new(6.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            "⇡",
+            egui::FontId::proportional(11.0),
+            COLOR_SEQUENCE,
+        );
+
+        painter.text(
+            rect.left_center() + Vec2::new(20.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            &seq.name,
+            egui::FontId::monospace(11.0),
+            Color32::from_rgb(169, 183, 198),
+        );
+
+        let type_short: String = seq.data_type.chars().take(12).collect();
+        painter.text(
+            rect.right_center() + Vec2::new(-6.0, 0.0),
+            egui::Align2::RIGHT_CENTER,
+            &type_short,
+            egui::FontId::monospace(9.5),
+            Color32::from_gray(90),
+        );
+    }
+
+    let _ = id;
+    resp.on_hover_ui(|ui| {
+        ui.label(RichText::new(format!(
+            "{}\nType: {}\nStart: {}  Inc: {}\nMin: {}  Max: {}{}",
+            seq.name,
+            seq.data_type,
+            seq.start_value,
+            seq.increment,
+            seq.min_value,
+            seq.max_value,
+            if seq.cycle { "  CYCLE" } else { "" },
+        )).monospace().small());
     })
 }
 

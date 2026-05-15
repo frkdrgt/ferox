@@ -212,6 +212,10 @@ struct BrowseState {
     page: usize,
     sort_col: Option<String>,
     sort_asc: bool,
+    /// Raw WHERE clause fragment typed by user (e.g. "id > 100").
+    filter_sql: String,
+    /// Snapshot of filter_sql that was used to load the current result page.
+    applied_filter: String,
 }
 
 impl BrowseState {
@@ -222,6 +226,8 @@ impl BrowseState {
             page: 0,
             sort_col: None,
             sort_asc: true,
+            filter_sql: String::new(),
+            applied_filter: String::new(),
         }
     }
 
@@ -230,6 +236,11 @@ impl BrowseState {
     }
 
     fn build_sql(&self) -> String {
+        let where_clause = if self.applied_filter.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", self.applied_filter.trim())
+        };
         let order_clause = match &self.sort_col {
             Some(col) => format!(
                 " ORDER BY \"{}\" {}",
@@ -240,8 +251,8 @@ impl BrowseState {
         };
         let offset = self.page * PAGE_SIZE;
         format!(
-            "SELECT * FROM \"{}\".\"{}\"{}  LIMIT {} OFFSET {};",
-            self.schema, self.table, order_clause, PAGE_SIZE, offset
+            "SELECT * FROM \"{}\".\"{}\"{}{} LIMIT {} OFFSET {};",
+            self.schema, self.table, where_clause, order_clause, PAGE_SIZE, offset
         )
     }
 }
@@ -901,14 +912,23 @@ impl QueryPanel {
         ui.separator();
 
         // ── Browse-mode banner ───────────────────────────────────────────────
-        if let Some(state) = self.browse.clone() {
+        let mut browse_exit = false;
+        let mut browse_filter_reload = false;
+        if let Some(state) = &mut self.browse {
             egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(6.0, 3.0))
                 .show(ui, |ui| {
+                    // Row 1: table label + sort info + exit button
                     ui.horizontal(|ui| {
+                        let has_filter = !state.applied_filter.is_empty();
+                        let label_text = if has_filter {
+                            format!("{} {} 🔍", i18n.browse_prefix(), state.label())
+                        } else {
+                            format!("{} {}", i18n.browse_prefix(), state.label())
+                        };
                         ui.label(
-                            egui::RichText::new(format!("{} {}", i18n.browse_prefix(), state.label()))
+                            egui::RichText::new(label_text)
                                 .strong()
                                 .color(egui::Color32::from_rgb(100, 180, 255)),
                         );
@@ -925,12 +945,46 @@ impl QueryPanel {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button(i18n.btn_exit_browse()).clicked() {
-                                self.browse = None;
-                                self.browse_result = false;
+                                browse_exit = true;
                             }
                         });
                     });
+                    // Row 2: WHERE filter input
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("WHERE")
+                                .monospace()
+                                .small()
+                                .color(egui::Color32::from_rgb(150, 120, 220)),
+                        );
+                        let filter_resp = ui.add(
+                            egui::TextEdit::singleline(&mut state.filter_sql)
+                                .hint_text(i18n.browse_filter_hint())
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                        let apply = ui.small_button(i18n.btn_apply_filter()).clicked()
+                            || (filter_resp.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                        if apply {
+                            state.applied_filter = state.filter_sql.clone();
+                            state.page = 0;
+                            browse_filter_reload = true;
+                        }
+                        if !state.filter_sql.is_empty() && ui.small_button("✕").clicked() {
+                            state.filter_sql.clear();
+                            state.applied_filter.clear();
+                            state.page = 0;
+                            browse_filter_reload = true;
+                        }
+                    });
                 });
+        }
+        if browse_exit {
+            self.browse = None;
+            self.browse_result = false;
+        } else if browse_filter_reload {
+            self.run_browse_page(db_tx);
         }
 
         // ── Result tabs ──────────────────────────────────────────────────────
@@ -1139,8 +1193,9 @@ impl QueryPanel {
                             self.selected_cell = Some((row, col));
                         }
 
-                        // ── Handle cell double-click → open value popup ──────
-                        if let Some((row, col)) = output.cell_double_clicked {
+                        // ── Handle cell double-click or right-click "View Full Value" → popup ──
+                        let popup_request = output.cell_double_clicked.or(output.full_value_requested);
+                        if let Some((row, col)) = popup_request {
                             if let Some(result) = &self.result {
                                 if col < result.columns.len() {
                                     let col_name = result.columns[col].clone();
@@ -1423,8 +1478,7 @@ impl QueryPanel {
                             ui.add(
                                 egui::TextEdit::multiline(&mut text)
                                     .desired_width(f32::INFINITY)
-                                    .font(egui::TextStyle::Monospace)
-                                    .interactive(false),
+                                    .font(egui::TextStyle::Monospace),
                             );
                         }
                     });

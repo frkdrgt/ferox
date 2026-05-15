@@ -250,6 +250,7 @@ impl FunctionKind {
 
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    pub oid: u32,
     pub name: String,
     /// Identity arguments, e.g. "amount numeric, rate numeric"
     pub args: String,
@@ -262,7 +263,8 @@ pub struct FunctionInfo {
 pub async fn load_functions(client: &Client, schema: &str) -> Result<Vec<FunctionInfo>> {
     let rows = client
         .query(
-            "SELECT p.proname,
+            "SELECT p.oid,
+                    p.proname,
                     pg_get_function_identity_arguments(p.oid),
                     COALESCE(pg_get_function_result(p.oid), 'void'),
                     CASE p.prokind
@@ -274,7 +276,7 @@ pub async fn load_functions(client: &Client, schema: &str) -> Result<Vec<Functio
              FROM pg_proc p
              JOIN pg_namespace n ON p.pronamespace = n.oid
              WHERE n.nspname = $1
-             ORDER BY p.proname, 2",
+             ORDER BY p.proname, 3",
             &[&schema],
         )
         .await?;
@@ -282,11 +284,12 @@ pub async fn load_functions(client: &Client, schema: &str) -> Result<Vec<Functio
     Ok(rows
         .iter()
         .map(|r| {
-            let kind_ch: &str = r.get(3);
+            let kind_ch: &str = r.get(4);
             FunctionInfo {
-                name: r.get(0),
-                args: r.get(1),
-                return_type: r.get(2),
+                oid: r.get::<_, u32>(0),
+                name: r.get(1),
+                args: r.get(2),
+                return_type: r.get(3),
                 kind: match kind_ch {
                     "p" => FunctionKind::Procedure,
                     "a" => FunctionKind::Aggregate,
@@ -609,6 +612,100 @@ pub async fn load_columns(
             data_type: r.get::<_, String>(1),
             is_nullable: r.get::<_, String>(2) == "YES",
             column_default: r.get::<_, Option<String>>(3),
+        })
+        .collect())
+}
+
+// ── Triggers ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct TriggerInfo {
+    pub name: String,
+    pub timing: String,
+    pub event: String,
+    pub function_name: String,
+    pub enabled: bool,
+}
+
+pub async fn load_triggers(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TriggerInfo>> {
+    let rows = client
+        .query(
+            "SELECT t.tgname,
+                    CASE t.tgtype & 2 WHEN 2 THEN 'BEFORE' ELSE
+                        CASE t.tgtype & 64 WHEN 64 THEN 'INSTEAD OF' ELSE 'AFTER' END
+                    END AS timing,
+                    ARRAY_TO_STRING(ARRAY(
+                        SELECT unnest(ARRAY['INSERT','DELETE','UPDATE','TRUNCATE'])
+                        WHERE (t.tgtype & 4 <> 0 AND unnest = 'INSERT')
+                           OR (t.tgtype & 8 <> 0 AND unnest = 'DELETE')
+                           OR (t.tgtype & 16 <> 0 AND unnest = 'UPDATE')
+                           OR (t.tgtype & 32 <> 0 AND unnest = 'TRUNCATE')
+                    ), ' OR ') AS events,
+                    p.proname,
+                    t.tgenabled <> 'D'
+             FROM pg_trigger t
+             JOIN pg_class c ON c.oid = t.tgrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_proc p ON p.oid = t.tgfoid
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND NOT t.tgisinternal
+             ORDER BY t.tgname",
+            &[&schema, &table],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| TriggerInfo {
+            name: r.get(0),
+            timing: r.get(1),
+            event: r.get(2),
+            function_name: r.get(3),
+            enabled: r.get(4),
+        })
+        .collect())
+}
+
+// ── Sequences ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SequenceInfo {
+    pub name: String,
+    pub data_type: String,
+    pub start_value: String,
+    pub increment: String,
+    pub min_value: String,
+    pub max_value: String,
+    pub cycle: bool,
+}
+
+pub async fn load_sequences(client: &Client, schema: &str) -> Result<Vec<SequenceInfo>> {
+    let rows = client
+        .query(
+            "SELECT sequence_name, data_type,
+                    start_value, increment, minimum_value, maximum_value, cycle_option
+             FROM information_schema.sequences
+             WHERE sequence_schema = $1
+             ORDER BY sequence_name",
+            &[&schema],
+        )
+        .await?;
+
+    Ok(rows
+        .iter()
+        .map(|r| SequenceInfo {
+            name: r.get(0),
+            data_type: r.get(1),
+            start_value: r.get(2),
+            increment: r.get(3),
+            min_value: r.get(4),
+            max_value: r.get(5),
+            cycle: r.get::<_, String>(6) == "YES",
         })
         .collect())
 }
