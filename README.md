@@ -277,55 +277,6 @@ All communication goes through `mpsc` channels — the UI thread never blocks.
 
 ---
 
-## Changelog
-
-### v0.2.6 — AI & Performance
-
-**AI: Natural Language → SQL**
-- New AI worker thread (separate tokio runtime, non-blocking)
-- `Ctrl+I` / AI button opens NL bar in the active query tab
-- Full live schema fetched from `information_schema.columns` before every request — AI sees every real table and column, never invents names
-- Multi-provider support out of the box:
-  - **Anthropic Claude** (`claude-haiku-4-5` default)
-  - **Groq** (`llama-3.3-70b-versatile`, free tier)
-  - **Ollama** (fully local, no key, no egress)
-  - **OpenAI** (`gpt-4o-mini`)
-  - **Custom** — any OpenAI-compatible endpoint via base URL
-- `Settings → AI` panel: provider selector, API key, model override, base URL override
-- Generated SQL lands directly in the active editor tab
-
-**Performance**
-- `display_indices` cache — filter/sort indices computed once and cached with dirty flag; no O(n×cols) scan per frame
-- Content-aware initial column widths (`compute_col_widths`) — samples 200 rows once per result set
-- Schema F5 refresh no-flash — stale table list stays visible with `↻` badge until new data arrives; replaced atomically
-
-**Schema diff & function browser** (v0.2.5.x)
-- Schema snapshot diff: compare two points-in-time for any schema
-- Function/procedure browser in the sidebar
-
----
-
-### v0.2.5 — Multi-statement, Column Stats, Rust 2024
-
-- Multi-statement execution: `;`-separated statements run in sequence, each result in its own tab
-- Column statistics panel: right-click any column header for null %, distinct count, min/max, top values
-- Migrated to Rust 2024 edition
-
-### v0.2.3 — i18n, Settings, About
-
-- Full EN/TR bilingual UI; language persists to config
-- Settings menu with language switcher
-- About dialog
-
-### v0.2.0 — SSH, ER Diagram, Join Builder
-
-- SSH tunnel support (russh)
-- ER diagram viewer with FK arrows, pan/zoom, draggable nodes
-- Visual Join Builder (`Query → Join Builder…`)
-- Safe mode transactions
-
----
-
 ## Contributing
 
 Bug reports, feature requests, and pull requests are welcome.
