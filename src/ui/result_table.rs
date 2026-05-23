@@ -23,6 +23,10 @@ pub struct TableOutput {
     pub col_stats_requested: Option<usize>,
     /// Right-click "View Full Value" on a cell → (display_row, col_idx)
     pub full_value_requested: Option<(usize, usize)>,
+    /// Right-click "Copy table as Markdown" on any cell
+    pub copy_as_markdown: bool,
+    /// Right-click "Copy table as HTML" on any cell
+    pub copy_as_html: bool,
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -69,7 +73,8 @@ impl<'a> ResultTable<'a> {
     }
 
     /// `display_indices`: pre-filtered & sorted slice managed by caller (avoids per-frame clone/scan).
-    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n, display_indices: &[usize]) -> TableOutput {
+    /// `search`: non-empty string causes matching cells to be highlighted (does not filter rows).
+    pub fn show(&mut self, ui: &mut egui::Ui, i18n: &I18n, display_indices: &[usize], search: &str) -> TableOutput {
         if self.result.columns.is_empty() {
             if let Some(n) = self.result.rows_affected {
                 ui.label(i18n.query_ok_rows(n));
@@ -86,7 +91,21 @@ impl<'a> ResultTable<'a> {
             .max(60.0)
             .min(300.0);
 
+        // Stable Id based on column names — same columns keep user-resized widths across
+        // queries; different columns start fresh with content-aware initial widths.
+        let col_id: u64 = self.result.columns.iter().fold(0u64, |acc, name| {
+            name.bytes().fold(acc, |h, b| h.wrapping_mul(31).wrapping_add(b as u64))
+        });
+
+        // Pre-compute lowercase search term once (avoids per-cell reallocation).
+        let search_lower: Option<String> = if search.is_empty() {
+            None
+        } else {
+            Some(search.to_lowercase())
+        };
+
         let mut builder = TableBuilder::new(ui)
+            .id_source(col_id)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -117,6 +136,8 @@ impl<'a> ResultTable<'a> {
         let mut edit_cancelled_flag = false;
         let mut col_stats_requested: Option<usize> = None;
         let mut full_value_requested: Option<(usize, usize)> = None;
+        let mut copy_as_markdown = false;
+        let mut copy_as_html = false;
 
         builder
             .header(24.0, |mut header| {
@@ -180,22 +201,34 @@ impl<'a> ResultTable<'a> {
                                     }
                                 }
                             } else {
-                                // egui_extras TableRow::col returns Sense::hover only,
-                                // so we allocate an interactive rect ourselves.
-                                let rect = ui.available_rect_before_wrap();
-                                let cell_resp = ui.interact(
-                                    rect,
-                                    ui.id().with((display_idx, col_idx)),
-                                    egui::Sense::click(),
-                                );
+                                let full_rect = ui.available_rect_before_wrap();
+                                let cell_str = cell.to_string();
+                                let is_null = matches!(cell, crate::db::query::CellValue::Null);
+
+                                // Highlight cells matching the search term (painter only, no allocation).
+                                if let Some(ref s) = search_lower {
+                                    if !is_null && cell_str.to_lowercase().contains(s.as_str()) {
+                                        ui.painter().rect_filled(
+                                            full_rect,
+                                            2.0,
+                                            egui::Color32::from_rgba_premultiplied(255, 200, 50, 55),
+                                        );
+                                    }
+                                }
+
+                                // Render content FIRST so the allocate_rect below comes last
+                                // in egui's widget registry — later allocation wins hover priority,
+                                // which makes right-click work even when the pointer is over the text.
                                 render_cell(ui, cell);
+
+                                // Claim the full cell rect AFTER render so context_menu responds
+                                // to secondary clicks anywhere in the cell (not just empty space).
+                                let cell_resp = ui.allocate_rect(full_rect, egui::Sense::click());
                                 if cell_resp.double_clicked() {
                                     cell_double_clicked = Some((display_idx, col_idx));
                                 } else if cell_resp.clicked() {
                                     cell_clicked = Some((actual_idx, col_idx));
                                 }
-                                let cell_str = cell.to_string();
-                                let is_null = matches!(cell, crate::db::query::CellValue::Null);
                                 cell_resp.context_menu(|ui| {
                                     if ui.button(i18n.cell_view_full()).clicked() {
                                         full_value_requested = Some((display_idx, col_idx));
@@ -203,6 +236,15 @@ impl<'a> ResultTable<'a> {
                                     }
                                     if !is_null && ui.button(i18n.cell_copy_value()).clicked() {
                                         ui.ctx().copy_text(cell_str.clone());
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
+                                    if ui.button(i18n.cell_copy_as_markdown()).clicked() {
+                                        copy_as_markdown = true;
+                                        ui.close_menu();
+                                    }
+                                    if ui.button(i18n.cell_copy_as_html()).clicked() {
+                                        copy_as_html = true;
                                         ui.close_menu();
                                     }
                                 });
@@ -231,6 +273,8 @@ impl<'a> ResultTable<'a> {
                 cell_clicked,
                 col_stats_requested,
                 full_value_requested,
+                copy_as_markdown,
+                copy_as_html,
                 ..Default::default()
             };
         }
@@ -258,6 +302,8 @@ impl<'a> ResultTable<'a> {
             edit_cancelled: edit_cancelled_flag,
             col_stats_requested,
             full_value_requested,
+            copy_as_markdown,
+            copy_as_html,
         }
     }
 

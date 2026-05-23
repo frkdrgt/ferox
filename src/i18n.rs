@@ -295,6 +295,19 @@ impl I18n {
         }
     }
     pub fn lbl_no_results(&self) -> &'static str { self.t("No results", "Sonuç yok") }
+    pub fn cell_copy_as_markdown(&self) -> &'static str {
+        self.t("Copy table as Markdown", "Tabloyu Markdown Olarak Kopyala")
+    }
+    pub fn cell_copy_as_html(&self) -> &'static str {
+        self.t("Copy table as HTML", "Tabloyu HTML Olarak Kopyala")
+    }
+    pub fn search_hint(&self) -> &'static str { self.t("Find in results…", "Sonuçlarda ara…") }
+    pub fn search_matches(&self, n: usize) -> String {
+        match self.0 {
+            Lang::En => if n == 1 { "1 match".to_owned() } else { format!("{n} matches") },
+            Lang::Tr => format!("{n} eşleşme"),
+        }
+    }
 
     // ── Sidebar ───────────────────────────────────────────────────────────────
 

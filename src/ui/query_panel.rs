@@ -318,6 +318,19 @@ pub struct QueryPanel {
     pub nl_submit: Option<String>,
     /// True while an AI request is in flight — spinner shown, input disabled.
     pub ai_pending: bool,
+    // ── Ctrl+F in-table search (highlights cells, does not filter rows) ───────
+    /// Current search term (separate from row-level result_filter).
+    search_text: String,
+    /// Whether the find bar is visible.
+    search_visible: bool,
+    /// Auto-focus the search TextEdit on the next frame.
+    search_needs_focus: bool,
+    /// Cached number of matching rows for the current search_text + display_indices.
+    search_match_count: usize,
+    /// search_text value used to compute the cached match count.
+    search_cache_text: String,
+    /// result_filter value used to compute the cached match count.
+    search_cache_filter: String,
 }
 
 impl Default for QueryPanel {
@@ -356,6 +369,12 @@ impl Default for QueryPanel {
             nl_input: String::new(),
             nl_submit: None,
             ai_pending: false,
+            search_text: String::new(),
+            search_visible: false,
+            search_needs_focus: false,
+            search_match_count: 0,
+            search_cache_text: String::new(),
+            search_cache_filter: String::new(),
         }
     }
 }
@@ -446,6 +465,11 @@ impl QueryPanel {
         self.display_filter_cache = String::new();
         self.display_dirty = false;
         self.selected_cell = None;
+        self.search_text.clear();
+        self.search_visible = false;
+        self.search_match_count = 0;
+        self.search_cache_text.clear();
+        self.search_cache_filter.clear();
         if self.result.as_ref().map(|r| !r.columns.is_empty()).unwrap_or(false) {
             self.active_tab = PanelTab::Results;
         }
@@ -1078,20 +1102,34 @@ impl QueryPanel {
             .max_height(results_height)
             .show(ui, |ui| match self.active_tab {
                 PanelTab::Results => {
-                    // ── Filter bar ───────────────────────────────────────────
+                    // ── Filter bar + Ctrl+F search bar ───────────────────────
                     if self.result.is_some() {
+                        // Ctrl+F: toggle find bar
+                        if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+                            self.search_visible = !self.search_visible;
+                            if self.search_visible {
+                                self.search_needs_focus = true;
+                            } else {
+                                self.search_text.clear();
+                                self.search_match_count = 0;
+                                self.search_cache_text.clear();
+                            }
+                        }
+
                         ui.horizontal(|ui| {
+                            // Row filter (hides non-matching rows)
                             let hint = egui::RichText::new(i18n.filter_hint())
                                 .color(egui::Color32::from_rgb(90, 95, 100));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.result_filter)
-                                    .desired_width(220.0)
+                                    .desired_width(180.0)
                                     .hint_text(hint),
                             );
                             if !self.result_filter.is_empty() && ui.small_button("✕").clicked() {
                                 self.result_filter.clear();
                             }
-                            // Ctrl+C: copy selected cell value (actual_row stored in selected_cell)
+
+                            // Ctrl+C: copy selected cell value
                             if let Some((actual_row, col_idx)) = self.selected_cell {
                                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
                                     if let Some(result) = &self.result {
@@ -1102,6 +1140,92 @@ impl QueryPanel {
                                             .unwrap_or_default();
                                         ui.output_mut(|o| o.copied_text = val);
                                     }
+                                }
+                            }
+
+                            ui.separator();
+
+                            // Find toggle button
+                            let find_fill = if self.search_visible {
+                                egui::Color32::from_rgb(45, 65, 110)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            };
+                            if ui.add(egui::Button::new("🔍").fill(find_fill).small())
+                                .on_hover_text("Find in results (Ctrl+F)")
+                                .clicked()
+                            {
+                                self.search_visible = !self.search_visible;
+                                if self.search_visible {
+                                    self.search_needs_focus = true;
+                                } else {
+                                    self.search_text.clear();
+                                    self.search_match_count = 0;
+                                    self.search_cache_text.clear();
+                                }
+                            }
+
+                            // Inline find bar
+                            if self.search_visible {
+                                let hint = egui::RichText::new(i18n.search_hint())
+                                    .color(egui::Color32::from_rgb(90, 95, 100));
+                                let te_resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.search_text)
+                                        .desired_width(150.0)
+                                        .hint_text(hint),
+                                );
+                                if self.search_needs_focus {
+                                    te_resp.request_focus();
+                                    self.search_needs_focus = false;
+                                }
+                                // Escape closes the find bar
+                                if te_resp.has_focus()
+                                    && ui.input_mut(|i| {
+                                        i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+                                    })
+                                {
+                                    self.search_visible = false;
+                                    self.search_text.clear();
+                                    self.search_match_count = 0;
+                                    self.search_cache_text.clear();
+                                }
+                                if !self.search_text.is_empty() && ui.small_button("✕").clicked() {
+                                    self.search_text.clear();
+                                    self.search_match_count = 0;
+                                    self.search_cache_text.clear();
+                                }
+
+                                // Match count — recomputed only when search_text or filter changes.
+                                if !self.search_text.is_empty() {
+                                    if self.search_text != self.search_cache_text
+                                        || self.display_filter_cache != self.search_cache_filter
+                                    {
+                                        let s = self.search_text.to_lowercase();
+                                        self.search_match_count = if let Some(result) = &self.result {
+                                            self.display_indices.iter().filter(|&&i| {
+                                                result.rows[i].iter().any(|c| {
+                                                    !matches!(c, CellValue::Null)
+                                                        && c.to_string().to_lowercase().contains(&s)
+                                                })
+                                            }).count()
+                                        } else {
+                                            0
+                                        };
+                                        self.search_cache_text = self.search_text.clone();
+                                        self.search_cache_filter = self.display_filter_cache.clone();
+                                    }
+                                    let count_color = if self.search_match_count == 0 {
+                                        egui::Color32::from_rgb(220, 80, 80)
+                                    } else {
+                                        egui::Color32::from_rgb(100, 200, 120)
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(
+                                            i18n.search_matches(self.search_match_count),
+                                        )
+                                        .small()
+                                        .color(count_color),
+                                    );
                                 }
                             }
                         });
@@ -1161,7 +1285,7 @@ impl QueryPanel {
                                 table.edit_needs_focus = self.edit_needs_focus;
                             }
 
-                            let out = table.show(ui, i18n, &self.display_indices);
+                            let out = table.show(ui, i18n, &self.display_indices, &self.search_text);
 
                             // Save back edit state (value may have changed)
                             if let (Some(r), Some(c)) = (table.edit_row, table.edit_col) {
@@ -1243,6 +1367,20 @@ impl QueryPanel {
                                 if col_idx < result.columns.len() {
                                     self.col_stats = Some(ColumnStats::compute(result, col_idx));
                                 }
+                            }
+                        }
+
+                        // ── Handle copy as Markdown / HTML ────────────────────
+                        if output.copy_as_markdown {
+                            if let Some(result) = &self.result {
+                                let text = format_as_markdown(result, &self.display_indices);
+                                ui.ctx().copy_text(text);
+                            }
+                        }
+                        if output.copy_as_html {
+                            if let Some(result) = &self.result {
+                                let text = format_as_html(result, &self.display_indices);
+                                ui.ctx().copy_text(text);
                             }
                         }
 
@@ -1745,6 +1883,51 @@ fn pick_save_path(ext: &str) -> Option<String> {
         .set_file_name(&default_name)
         .save_file()
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+// ── Copy-as formatters ────────────────────────────────────────────────────────
+
+fn format_as_markdown(result: &crate::db::QueryResult, indices: &[usize]) -> String {
+    let escape = |s: &str| s.replace('|', "\\|");
+    let header = result.columns.iter()
+        .map(|c| format!(" {} ", escape(c)))
+        .collect::<Vec<_>>()
+        .join("|");
+    let divider = result.columns.iter().map(|_| "---").collect::<Vec<_>>().join("|");
+    let mut out = format!("|{header}|\n|{divider}|\n");
+    for &i in indices {
+        let row = result.rows[i].iter()
+            .map(|c| format!(" {} ", escape(&c.to_string())))
+            .collect::<Vec<_>>()
+            .join("|");
+        out.push_str(&format!("|{row}|\n"));
+    }
+    out
+}
+
+fn format_as_html(result: &crate::db::QueryResult, indices: &[usize]) -> String {
+    let header = result.columns.iter()
+        .map(|c| format!("<th>{}</th>", html_escape(c)))
+        .collect::<String>();
+    let rows = indices.iter()
+        .map(|&i| {
+            let cells = result.rows[i].iter()
+                .map(|c| format!("<td>{}</td>", html_escape(&c.to_string())))
+                .collect::<String>();
+            format!("  <tr>{cells}</tr>")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "<table>\n<thead>\n  <tr>{header}</tr>\n</thead>\n<tbody>\n{rows}\n</tbody>\n</table>"
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 // ── SQL formatter ─────────────────────────────────────────────────────────────
