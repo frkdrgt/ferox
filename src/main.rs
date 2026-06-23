@@ -7,6 +7,7 @@ mod db;
 mod history;
 mod i18n;
 mod logger;
+mod snippets;
 mod ui;
 
 use app::PgClientApp;

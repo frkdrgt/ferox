@@ -3,6 +3,7 @@ use egui::{Color32, RichText};
 
 use crate::{
     ai::{AiCommand, AiEvent, AiHandle},
+    snippets::Snippets,
     config::{AiConfig, AppConfig},
     db::{DbCommand, DbEvent, DbHandle},
     history::QueryHistory,
@@ -56,6 +57,7 @@ pub struct PgClientApp {
     // App state
     pub config: AppConfig,
     pub history: QueryHistory,
+    pub snippets: Snippets,
     pub show_connection_dialog: bool,
     /// When true, DML statements are automatically wrapped in BEGIN.
     pub safe_mode: bool,
@@ -76,6 +78,8 @@ pub struct PgClientApp {
     pending_ai_prompt: Option<String>,
     /// request_id counter for schema fetch round-trips.
     ai_schema_req_id: u64,
+    /// Frames remaining before the one-shot post-startup working-set trim.
+    ws_trim_countdown: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +102,7 @@ impl PgClientApp {
 
         let config = AppConfig::load().unwrap_or_default();
         let history = QueryHistory::load().unwrap_or_default();
+        let snippets = Snippets::load().unwrap_or_default();
         let i18n = I18n::new(config.language);
 
         // Load logo texture for the About dialog.
@@ -138,6 +143,7 @@ impl PgClientApp {
             join_builder: JoinBuilder::default(),
             config,
             history,
+            snippets,
             show_connection_dialog: true,
             safe_mode: false,
             i18n,
@@ -149,6 +155,7 @@ impl PgClientApp {
             ai_draft,
             pending_ai_prompt: None,
             ai_schema_req_id: 0,
+            ws_trim_countdown: 5,
         }
     }
 
@@ -250,6 +257,14 @@ impl PgClientApp {
                         self.connections[i].sidebar.clear();
                     }
                     DbEvent::Schemas(schemas) => {
+                        // Preload tables for every user schema so query-editor
+                        // autocomplete has table/column names without expanding
+                        // the tree. Each Tables event chains LoadSchemaColumns.
+                        for s in &schemas {
+                            let _ = self.connections[i]
+                                .db_tx
+                                .send(DbCommand::LoadTables { schema: s.name.clone() });
+                        }
                         self.connections[i].sidebar.set_schemas(schemas);
                     }
                     DbEvent::Tables { schema, tables } => {
@@ -366,6 +381,9 @@ impl PgClientApp {
                     }
                     DbEvent::TransactionClosed => {
                         self.connections[i].in_transaction = false;
+                    }
+                    DbEvent::ColumnStatsReady(stats) => {
+                        self.tab_manager.set_col_stats_for(conn_id, stats);
                     }
                     // TestResult is only sent via the dedicated test_conn channel.
                     DbEvent::TestResult { .. } => {}
@@ -868,6 +886,18 @@ impl eframe::App for PgClientApp {
         // visuals set at startup when the OS is in light mode.
         configure_style(ctx);
 
+        // One-shot working-set trim a few frames after startup: releases pages
+        // touched only during init (font decode, icon resize, GL setup) back to
+        // the OS. They reload on demand if ever needed again.
+        if self.ws_trim_countdown > 0 {
+            self.ws_trim_countdown -= 1;
+            if self.ws_trim_countdown == 0 {
+                trim_working_set();
+            } else {
+                ctx.request_repaint();
+            }
+        }
+
         self.process_db_events();
         self.process_test_event();
         self.process_ai_events();
@@ -894,6 +924,8 @@ impl eframe::App for PgClientApp {
                 self.tab_manager.update_completion_data_for(conn_id, tables, columns);
             }
         }
+        // Seed completion for any tab opened after its schema was already loaded.
+        self.tab_manager.seed_completion_from_cache();
 
         // Dashboard load / refresh logic
         if self.tab_manager.dashboard_is_active() && self.tab_manager.dashboard_needs_load() {
@@ -1145,7 +1177,14 @@ impl eframe::App for PgClientApp {
                 .map(|c| (c.id, c.name.as_str(), &c.db_tx))
                 .collect();
             let ai_enabled = self.config.ai.is_configured();
-            self.tab_manager.show(ui, &conn_refs, &mut self.history, &i18n, ai_enabled);
+            self.tab_manager.show(
+                ui,
+                &conn_refs,
+                &mut self.history,
+                &mut self.snippets,
+                &i18n,
+                ai_enabled,
+            );
         });
 
         // ── Handle pending NL→SQL requests from the active panel ─────────────
@@ -1263,6 +1302,26 @@ impl eframe::App for PgClientApp {
         }
     }
 }
+
+/// Ask Windows to drop all currently-unreferenced pages from the working set.
+/// Pages still in use page back in transparently; net effect is that startup-only
+/// allocations (font decode, icon resize, GL/driver init) stop counting against
+/// resident memory.
+#[cfg(windows)]
+fn trim_working_set() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn SetProcessWorkingSetSize(handle: isize, min: usize, max: usize) -> i32;
+    }
+    // (-1, -1) — documented sentinel meaning "empty the working set".
+    unsafe {
+        SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+    }
+}
+
+#[cfg(not(windows))]
+fn trim_working_set() {}
 
 fn is_dml(sql: &str) -> bool {
     let t = sql.trim().to_lowercase();

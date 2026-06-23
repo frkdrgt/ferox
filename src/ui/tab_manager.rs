@@ -3,7 +3,7 @@ use std::sync::mpsc::Sender;
 
 use egui::{Color32, RichText, Sense};
 
-use crate::db::metadata::{ConnInfo, ErTableInfo, IndexStat, TableStat};
+use crate::db::metadata::{ColumnStatsResult, ConnInfo, ErTableInfo, IndexStat, TableStat};
 use crate::db::{DbCommand, QueryResult};
 use crate::history::QueryHistory;
 use crate::i18n::{I18n, Lang};
@@ -70,8 +70,13 @@ pub struct TabManager {
     active: usize,
     /// conn_id → tab_idx for tabs currently awaiting a DB result.
     running_tabs: HashMap<usize, usize>,
+    /// conn_id → tab_idx for tabs awaiting a column-stats DB result.
+    stats_pending_tabs: HashMap<usize, usize>,
     next_id: usize,
     next_num: usize,
+    /// conn_id → (tables, columns) latest autocomplete data, so tabs created
+    /// after the schema loaded still get completion data.
+    completion_cache: HashMap<usize, (Vec<String>, Vec<String>)>,
     /// The shared dashboard widget (state is shared across all Dashboard tabs).
     pub dashboard: Dashboard,
 }
@@ -87,8 +92,10 @@ impl Default for TabManager {
             }],
             active: 0,
             running_tabs: HashMap::new(),
+            stats_pending_tabs: HashMap::new(),
             next_id: 1,
             next_num: 2,
+            completion_cache: HashMap::new(),
             dashboard: Dashboard::default(),
         }
     }
@@ -417,6 +424,16 @@ impl TabManager {
         }
     }
 
+    /// Deliver DB-computed column statistics to the tab that requested them.
+    pub fn set_col_stats_for(&mut self, conn_id: usize, stats: ColumnStatsResult) {
+        let idx = self.stats_pending_tabs.remove(&conn_id).unwrap_or(self.active);
+        if let Some(t) = self.tabs.get_mut(idx) {
+            if let Some(p) = t.panel_mut() {
+                p.set_col_stats(stats);
+            }
+        }
+    }
+
     /// Broadcast primary-key info to every Query tab (any tab may browse that table).
     pub fn set_primary_key(&mut self, schema: &str, table: &str, cols: Vec<String>) {
         for t in &mut self.tabs {
@@ -535,6 +552,22 @@ impl TabManager {
                 }
             }
         }
+        self.completion_cache.insert(conn_id, (tables, columns));
+    }
+
+    /// Seed any Query panel that still has empty completion data from the cache.
+    /// Cheap: only clones when a panel actually needs it (e.g. a tab opened
+    /// after the schema was already loaded).
+    pub fn seed_completion_from_cache(&mut self) {
+        for t in &mut self.tabs {
+            if let Some((tables, columns)) = self.completion_cache.get(&t.conn_id) {
+                if let Some(p) = t.panel_mut() {
+                    if !p.has_completion_data() {
+                        p.set_completion_data(tables.clone(), columns.clone());
+                    }
+                }
+            }
+        }
     }
 
     pub fn trigger_export_csv(&mut self, db_tx: &Sender<DbCommand>) {
@@ -557,6 +590,7 @@ impl TabManager {
         ui: &mut egui::Ui,
         conns: &[(usize, &str, &Sender<DbCommand>)],
         history: &mut QueryHistory,
+        snippets: &mut crate::snippets::Snippets,
         i18n: &I18n,
         ai_enabled: bool,
     ) {
@@ -649,11 +683,17 @@ impl TabManager {
                 if let Some(db_tx) = db_tx_opt {
                     let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if let Some(p) = self.tabs[active_idx].panel_mut() {
-                        p.show(ui, db_tx, history, i18n, ai_enabled);
+                        p.show(ui, db_tx, history, snippets, i18n, ai_enabled);
                     }
                     let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if !was_running && is_running_now {
                         self.running_tabs.insert(tab_conn_id, active_idx);
+                    }
+                    if self.tabs[active_idx].panel().map(|p| p.col_stats_db_pending).unwrap_or(false) {
+                        self.stats_pending_tabs.insert(tab_conn_id, active_idx);
+                        if let Some(p) = self.tabs[active_idx].panel_mut() {
+                            p.col_stats_db_pending = false;
+                        }
                     }
                 } else {
                     ui.vertical_centered(|ui| {

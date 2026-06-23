@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.2.9] — 2026-06-22
+
+### Added
+- **Saved Queries (snippets)** — press **Ctrl+Shift+S** (or the 💾 Save button) to save the current SQL under a name; a searchable snippets panel lists all saved queries with right-click **Load into editor** / **Delete**; snippets persist to a TOML file so they survive restarts
+- **Autocomplete without expanding schemas** — table and column names are now preloaded on connect (one `LoadTables` + column query per user schema), so the SQL editor autocomplete works immediately without clicking any schema open; previously names appeared only after a schema was expanded
+- **DB-side column statistics** — the column Statistics panel now computes stats against the full table on the database (respecting the active browse `WHERE` filter) instead of only the rows fetched into memory, with a loading indicator and a source note
+
+### Fixed
+- Autocomplete data not reaching tabs opened after the schema had already loaded — a per-connection completion cache now seeds any new/empty query tab, so autocomplete works in every tab regardless of when it was opened
+
+### Changed
+- Crate renamed to `ferox-pg` for crates.io publishing; added package metadata (description, license, repository, keywords, categories)
+
+### Performance
+- Completion seeding is guarded by a cheap empty-check per tab — table/column lists are cloned into a panel only once, when it is first populated, not every frame
+
+---
+
+## [0.2.8] — 2026-05-23
+
+### Added
+- **Trigger browser** — sidebar shows a TRIGGERS section under each expanded table (name, timing, events, called function, enabled state) with right-click actions
+- **Sequence browser** — SEQUENCES section per schema (name + current value); right-click **Set Value…** / **Show DDL**
+- **Browse-mode WHERE filter** — type any SQL predicate in the browse filter bar; appended as a `WHERE` clause, persists across pagination, 🔍 badge when active
+- **Cell right-click menu** — View Full Value (resizable popup) / Copy Value
+- **Find in Results (Ctrl+F)** — inline find bar that highlights matching cells in yellow with a live match counter, independent of the row filter
+- **Copy table as Markdown / HTML** — right-click a cell to copy the current view (respecting filter and sort) to the clipboard
+- **Column width persistence** — dragged column widths persist across re-runs of the same query (column-name hash as stable TableBuilder Id)
+
+### Fixed
+- Right-click context menu now responds over cell text, not just empty cell space (widget allocation reordered)
+- Cell popup text is now selectable
+- `pg_get_functiondef` uses OID instead of `regprocedure` cast — fixes "type does not exist" errors for functions with `text`/complex argument types
+
+### Performance
+- Find-bar match count computed lazily — only when the search term or row filter changes
+
+---
+
 ## [0.2.7] — 2026-05-04
 
 ### Added

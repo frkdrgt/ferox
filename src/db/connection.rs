@@ -51,6 +51,8 @@ pub enum DbCommand {
     FetchDdlText(String),
     /// Load sequences for a schema.
     LoadSequences { schema: String },
+    /// Compute column statistics from the full table (used for browse-mode stats).
+    LoadColumnStats { schema: String, table: String, col_name: String, filter: String },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -103,6 +105,8 @@ pub enum DbEvent {
     TransactionOpen,
     /// The safe-mode transaction was closed (COMMIT or ROLLBACK).
     TransactionClosed,
+    /// Column statistics computed from the full table (response to LoadColumnStats).
+    ColumnStatsReady(metadata::ColumnStatsResult),
 }
 
 /// Handle that owns the DB background thread.
@@ -210,6 +214,17 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             .await
                             .unwrap_or_default();
                         let _ = evt_tx.send(DbEvent::SequencesLoaded { schema, sequences });
+                    }
+                }
+            }
+
+            DbCommand::LoadColumnStats { schema, table, col_name, filter } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &client {
+                        match metadata::load_column_stats(c, &schema, &table, &col_name, &filter).await {
+                            Ok(stats) => { let _ = evt_tx.send(DbEvent::ColumnStatsReady(stats)); }
+                            Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                        }
                     }
                 }
             }

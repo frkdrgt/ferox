@@ -166,12 +166,43 @@ impl I18n {
 
     pub fn tab_results(&self) -> &'static str { self.t("Results", "Sonuçlar") }
     pub fn tab_history(&self) -> &'static str { self.t("History", "Geçmiş") }
+    pub fn tab_saved(&self) -> &'static str { self.t("Saved", "Kayıtlı") }
     pub fn tab_plan(&self) -> &'static str { self.t("⚡ Plan", "⚡ Plan") }
     pub fn tab_messages(&self) -> &'static str { self.t("Messages", "Mesajlar") }
     pub fn tab_messages_n(&self, n: usize) -> String {
         match self.0 {
             Lang::En => format!("Messages ({n})"),
             Lang::Tr => format!("Mesajlar ({n})"),
+        }
+    }
+
+    // ── Saved queries / snippets ──────────────────────────────────────────────
+
+    pub fn btn_save_snippet(&self) -> &'static str { self.t("💾 Save", "💾 Kaydet") }
+    pub fn hover_save_snippet(&self) -> &'static str {
+        self.t("Save query with a name (Ctrl+Shift+S)", "Sorguyu isimle kaydet (Ctrl+Shift+S)")
+    }
+    pub fn dlg_save_query(&self) -> &'static str { self.t("💾 Save Query", "💾 Sorguyu Kaydet") }
+    pub fn lbl_snippet_name(&self) -> &'static str { self.t("Name:", "İsim:") }
+    pub fn btn_save(&self) -> &'static str { self.t("Save", "Kaydet") }
+    pub fn snippet_overwrite_warn(&self) -> &'static str {
+        self.t(
+            "⚠ A snippet with this name exists — it will be overwritten.",
+            "⚠ Bu isimde bir kayıt var — üzerine yazılacak.",
+        )
+    }
+    pub fn snippet_ctx_load(&self) -> &'static str { self.t("📋  Load into editor", "📋  Editöre yükle") }
+    pub fn snippet_ctx_delete(&self) -> &'static str { self.t("🗑  Delete", "🗑  Sil") }
+    pub fn snippets_empty_hint(&self) -> &'static str {
+        self.t(
+            "No saved queries yet — press Ctrl+Shift+S to save the current query.",
+            "Henüz kayıtlı sorgu yok — geçerli sorguyu Ctrl+Shift+S ile kaydedin.",
+        )
+    }
+    pub fn log_snippet_saved(&self, name: &str) -> String {
+        match self.0 {
+            Lang::En => format!("Query saved as \"{name}\""),
+            Lang::Tr => format!("Sorgu \"{name}\" adıyla kaydedildi"),
         }
     }
 
@@ -556,5 +587,11 @@ impl I18n {
     pub fn col_stats_top_values(&self) -> &'static str { self.t("Top values:", "En çok tekrar:") }
     pub fn col_stats_source_note(&self) -> &'static str {
         self.t("(computed from fetched rows)", "(yüklenen satırlardan hesaplandı)")
+    }
+    pub fn col_stats_source_note_db(&self) -> &'static str {
+        self.t("(computed from full table)", "(tüm tablodan hesaplandı)")
+    }
+    pub fn col_stats_loading(&self) -> &'static str {
+        self.t("Loading statistics…", "İstatistikler yükleniyor…")
     }
 }

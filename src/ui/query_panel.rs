@@ -4,6 +4,7 @@ use std::sync::mpsc::Sender;
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
 use crate::i18n::{I18n, Lang};
+use crate::snippets::Snippets;
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
 use crate::ui::result_table::ResultTable;
@@ -151,6 +152,7 @@ struct ColumnStats {
     min_len: Option<usize>,
     max_len: Option<usize>,
     top_values: Vec<(String, usize)>,
+    from_db: bool,
 }
 
 impl ColumnStats {
@@ -189,6 +191,20 @@ impl ColumnStats {
             min_len: if min_len == usize::MAX { None } else { Some(min_len) },
             max_len: if null_count == total { None } else { Some(max_len) },
             top_values,
+            from_db: false,
+        }
+    }
+
+    fn from_db_result(r: crate::db::metadata::ColumnStatsResult) -> Self {
+        ColumnStats {
+            col_name: r.col_name,
+            total: r.total as usize,
+            null_count: r.null_count as usize,
+            distinct: r.distinct as usize,
+            min_len: r.min_len.map(|v| v as usize),
+            max_len: r.max_len.map(|v| v as usize),
+            top_values: r.top_values.into_iter().map(|(v, c)| (v, c as usize)).collect(),
+            from_db: true,
         }
     }
 }
@@ -201,6 +217,7 @@ enum PanelTab {
     Results,
     Plan,
     History,
+    Saved,
     Messages,
 }
 
@@ -308,6 +325,11 @@ pub struct QueryPanel {
     pub lang: Lang,
     /// Column statistics popup state.
     col_stats: Option<ColumnStats>,
+    /// Some(col_name) while a DB-side stats query is in flight (browse mode).
+    col_stats_loading: Option<String>,
+    /// Set to true when a DB-side stats query was sent this frame (browse mode).
+    /// tab_manager reads and resets this to record the requesting tab.
+    pub col_stats_db_pending: bool,
     // ── AI / NL→SQL ──────────────────────────────────────────────────────────
     /// Whether the NL input bar is visible.
     pub nl_bar_visible: bool,
@@ -331,6 +353,15 @@ pub struct QueryPanel {
     search_cache_text: String,
     /// result_filter value used to compute the cached match count.
     search_cache_filter: String,
+    // ── Saved queries / snippets ──────────────────────────────────────────────
+    /// Filter text for the Saved tab list.
+    snippet_search: String,
+    /// Whether the "Save Query" name dialog is open.
+    snippet_save_open: bool,
+    /// Name being typed in the save dialog.
+    snippet_name_input: String,
+    /// Auto-focus the name TextEdit on the next frame.
+    snippet_name_focus: bool,
 }
 
 impl Default for QueryPanel {
@@ -365,6 +396,8 @@ impl Default for QueryPanel {
             completion_columns: Vec::new(),
             lang: Lang::En,
             col_stats: None,
+            col_stats_loading: None,
+            col_stats_db_pending: false,
             nl_bar_visible: false,
             nl_input: String::new(),
             nl_submit: None,
@@ -375,6 +408,10 @@ impl Default for QueryPanel {
             search_match_count: 0,
             search_cache_text: String::new(),
             search_cache_filter: String::new(),
+            snippet_search: String::new(),
+            snippet_save_open: false,
+            snippet_name_input: String::new(),
+            snippet_name_focus: false,
         }
     }
 }
@@ -383,6 +420,10 @@ impl QueryPanel {
     pub fn set_completion_data(&mut self, tables: Vec<String>, columns: Vec<String>) {
         self.completion_tables = tables;
         self.completion_columns = columns;
+    }
+
+    pub fn has_completion_data(&self) -> bool {
+        !self.completion_tables.is_empty() || !self.completion_columns.is_empty()
     }
 
     pub fn current_sql(&self) -> &str {
@@ -505,6 +546,11 @@ impl QueryPanel {
         self.push_log(LogEntry::info(i18n.log_exported(&path)));
     }
 
+    pub fn set_col_stats(&mut self, result: crate::db::metadata::ColumnStatsResult) {
+        self.col_stats_loading = None;
+        self.col_stats = Some(ColumnStats::from_db_result(result));
+    }
+
     pub fn is_running(&self) -> bool {
         self.running
     }
@@ -608,6 +654,7 @@ impl QueryPanel {
         ui: &mut egui::Ui,
         db_tx: &Sender<DbCommand>,
         history: &mut QueryHistory,
+        snippets: &mut Snippets,
         i18n: &I18n,
         ai_enabled: bool,
     ) {
@@ -615,6 +662,15 @@ impl QueryPanel {
         if self.pending_refresh {
             self.pending_refresh = false;
             self.run_browse_page(db_tx);
+        }
+
+        // Ctrl+Shift+S — save current query as a named snippet.
+        if !self.sql.trim().is_empty()
+            && ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::S)
+            })
+        {
+            self.open_snippet_dialog();
         }
 
         let total_height = ui.available_height();
@@ -718,6 +774,17 @@ impl QueryPanel {
                                 lines_between_queries: 1,
                             },
                         );
+                    }
+
+                    if ui
+                        .add_enabled(
+                            !self.sql.trim().is_empty(),
+                            egui::Button::new(i18n.btn_save_snippet()),
+                        )
+                        .on_hover_text(i18n.hover_save_snippet())
+                        .clicked()
+                    {
+                        self.open_snippet_dialog();
                     }
 
                     ui.separator();
@@ -1024,9 +1091,11 @@ impl QueryPanel {
                 ui.horizontal(|ui| {
                     let results_label = i18n.tab_results();
                     let history_label = i18n.tab_history();
+                    let saved_label = i18n.tab_saved();
                     let tabs: &[(PanelTab, &str, Option<egui::Color32>)] = &[
                         (PanelTab::Results, results_label, None),
                         (PanelTab::History, history_label, None),
+                        (PanelTab::Saved, saved_label, None),
                     ];
 
                     for (tab, label, _color) in tabs {
@@ -1361,11 +1430,25 @@ impl QueryPanel {
                             self.edit_needs_focus = false;
                         }
 
-                        // ── Handle column stats request ───────────────────────
+                        // ─��� Handle column stats request ───��───────────────────
                         if let Some(col_idx) = output.col_stats_requested {
                             if let Some(result) = &self.result {
                                 if col_idx < result.columns.len() {
-                                    self.col_stats = Some(ColumnStats::compute(result, col_idx));
+                                    if self.browse_result {
+                                        if let Some(state) = &self.browse {
+                                            let col_name = result.columns[col_idx].clone();
+                                            let _ = db_tx.send(DbCommand::LoadColumnStats {
+                                                schema: state.schema.clone(),
+                                                table: state.table.clone(),
+                                                col_name: col_name.clone(),
+                                                filter: state.applied_filter.clone(),
+                                            });
+                                            self.col_stats_loading = Some(col_name);
+                                            self.col_stats_db_pending = true;
+                                        }
+                                    } else {
+                                        self.col_stats = Some(ColumnStats::compute(result, col_idx));
+                                    }
                                 }
                             }
                         }
@@ -1532,6 +1615,71 @@ impl QueryPanel {
                         });
                     }
                 }
+                PanelTab::Saved => {
+                    ui.horizontal(|ui| {
+                        ui.label(i18n.label_search());
+                        ui.text_edit_singleline(&mut self.snippet_search);
+                    });
+                    ui.separator();
+
+                    if snippets.entries.is_empty() {
+                        ui.label(
+                            egui::RichText::new(i18n.snippets_empty_hint())
+                                .color(egui::Color32::from_rgb(110, 123, 139)),
+                        );
+                    }
+
+                    let search = self.snippet_search.to_lowercase();
+                    let text_dim = egui::Color32::from_rgb(110, 123, 139);
+                    let mut to_delete: Option<String> = None;
+                    let mut to_load: Option<String> = None;
+
+                    for snip in snippets.entries.iter().filter(|s| {
+                        search.is_empty()
+                            || s.name.to_lowercase().contains(&search)
+                            || s.sql.to_lowercase().contains(&search)
+                    }) {
+                        let preview: String =
+                            snip.sql.lines().next().unwrap_or("").chars().take(60).collect();
+                        ui.horizontal(|ui| {
+                            let resp = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&snip.name).strong(),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            ui.label(
+                                egui::RichText::new(preview)
+                                    .small()
+                                    .monospace()
+                                    .color(text_dim),
+                            );
+                            if resp.double_clicked() {
+                                to_load = Some(snip.sql.clone());
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button(i18n.snippet_ctx_load()).clicked() {
+                                    to_load = Some(snip.sql.clone());
+                                    ui.close_menu();
+                                }
+                                if ui.button(i18n.snippet_ctx_delete()).clicked() {
+                                    to_delete = Some(snip.name.clone());
+                                    ui.close_menu();
+                                }
+                            });
+                            resp.on_hover_text(snip.sql.as_str());
+                        });
+                    }
+
+                    if let Some(sql) = to_load {
+                        self.sql = sql;
+                        self.browse = None;
+                    }
+                    if let Some(name) = to_delete {
+                        snippets.remove(&name);
+                        let _ = snippets.save();
+                    }
+                }
             });
 
         // ── Pagination bar (only in browse mode) ────────────────────────────
@@ -1578,6 +1726,86 @@ impl QueryPanel {
         let ctx = ui.ctx().clone();
         self.show_cell_popup(&ctx, i18n);
         self.show_col_stats_popup(&ctx, i18n);
+        self.show_snippet_dialog(&ctx, snippets, i18n);
+    }
+
+    // ── Save query as snippet ─────────────────────────────────────────────────
+
+    fn open_snippet_dialog(&mut self) {
+        self.snippet_save_open = true;
+        self.snippet_name_focus = true;
+        if self.snippet_name_input.is_empty() {
+            // Prefill with the first line of the query, truncated.
+            self.snippet_name_input =
+                self.sql.trim().lines().next().unwrap_or("").chars().take(40).collect();
+        }
+    }
+
+    fn show_snippet_dialog(&mut self, ctx: &egui::Context, snippets: &mut Snippets, i18n: &I18n) {
+        if !self.snippet_save_open {
+            return;
+        }
+
+        let mut open = true;
+        egui::Window::new(i18n.dlg_save_query())
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, -60.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(i18n.lbl_snippet_name());
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.snippet_name_input)
+                            .desired_width(260.0),
+                    );
+                    if self.snippet_name_focus {
+                        resp.request_focus();
+                        self.snippet_name_focus = false;
+                    }
+                });
+
+                let name = self.snippet_name_input.trim().to_owned();
+                if !name.is_empty() && snippets.entries.iter().any(|s| s.name == name) {
+                    ui.label(
+                        egui::RichText::new(i18n.snippet_overwrite_warn())
+                            .small()
+                            .color(egui::Color32::from_rgb(204, 152, 78)),
+                    );
+                }
+                ui.add_space(6.0);
+
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let mut do_save = false;
+                ui.horizontal(|ui| {
+                    let save_btn = egui::Button::new(i18n.btn_save())
+                        .fill(egui::Color32::from_rgb(73, 156, 84)); // #499c54
+                    if ui.add_enabled(!name.is_empty(), save_btn).clicked() {
+                        do_save = true;
+                    }
+                    if ui.button(i18n.btn_cancel()).clicked() {
+                        self.snippet_save_open = false;
+                    }
+                });
+                if enter && !name.is_empty() {
+                    do_save = true;
+                }
+                if esc {
+                    self.snippet_save_open = false;
+                }
+
+                if do_save {
+                    snippets.upsert(name.clone(), self.sql.clone());
+                    let _ = snippets.save();
+                    self.push_log(LogEntry::info(i18n.log_snippet_saved(&name)));
+                    self.snippet_save_open = false;
+                    self.snippet_name_input.clear();
+                }
+            });
+        if !open {
+            self.snippet_save_open = false;
+        }
     }
 
     // ── Cell value popup ─────────────────────────────────────────────────────
@@ -1695,6 +1923,26 @@ impl QueryPanel {
     // ── Column stats popup ────────────────────────────────────────────────────
 
     fn show_col_stats_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
+        // Loading spinner while DB stats query is in flight.
+        if let Some(col_name) = &self.col_stats_loading {
+            let title = i18n.col_stats_title(col_name);
+            let col_name = col_name.clone();
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .min_width(200.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(i18n.col_stats_loading());
+                    });
+                });
+            ctx.request_repaint();
+            // Keep loading state so popup stays open; will be replaced when stats arrive.
+            self.col_stats_loading = Some(col_name);
+            return;
+        }
+
         let Some(stats) = self.col_stats.take() else { return };
         let mut open = true;
 
@@ -1760,8 +2008,13 @@ impl QueryPanel {
                 }
 
                 ui.separator();
+                let note = if stats.from_db {
+                    i18n.col_stats_source_note_db()
+                } else {
+                    i18n.col_stats_source_note()
+                };
                 ui.label(
-                    egui::RichText::new(i18n.col_stats_source_note())
+                    egui::RichText::new(note)
                         .small()
                         .color(egui::Color32::GRAY),
                 );

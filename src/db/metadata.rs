@@ -709,3 +709,82 @@ pub async fn load_sequences(client: &Client, schema: &str) -> Result<Vec<Sequenc
         })
         .collect())
 }
+
+#[derive(Debug, Clone)]
+pub struct ColumnStatsResult {
+    pub col_name: String,
+    pub total: i64,
+    pub null_count: i64,
+    pub distinct: i64,
+    pub min_len: Option<i64>,
+    pub max_len: Option<i64>,
+    pub top_values: Vec<(String, i64)>,
+}
+
+pub async fn load_column_stats(
+    client: &Client,
+    schema: &str,
+    table: &str,
+    col_name: &str,
+    filter: &str,
+) -> Result<ColumnStatsResult> {
+    let esc_col    = col_name.replace('"', "\"\"");
+    let esc_schema = schema.replace('"', "\"\"");
+    let esc_table  = table.replace('"', "\"\"");
+    let where_clause = if filter.trim().is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", filter)
+    };
+
+    let agg_sql = format!(
+        "SELECT COUNT(*), COUNT(\"{col}\"), COUNT(DISTINCT \"{col}\"), \
+         MIN(LENGTH(\"{col}\"::text)), MAX(LENGTH(\"{col}\"::text)) \
+         FROM \"{schema}\".\"{table}\" {where}",
+        col = esc_col, schema = esc_schema, table = esc_table, where = where_clause
+    );
+
+    let msgs = client.simple_query(&agg_sql).await?;
+    let mut total    = 0i64;
+    let mut non_null = 0i64;
+    let mut distinct = 0i64;
+    let mut min_len: Option<i64> = None;
+    let mut max_len: Option<i64> = None;
+
+    for msg in &msgs {
+        if let tokio_postgres::SimpleQueryMessage::Row(r) = msg {
+            total    = r.get(0).and_then(|s| s.parse().ok()).unwrap_or(0);
+            non_null = r.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            distinct = r.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+            min_len  = r.get(3).and_then(|s| s.parse().ok());
+            max_len  = r.get(4).and_then(|s| s.parse().ok());
+            break;
+        }
+    }
+
+    let top_sql = format!(
+        "SELECT \"{col}\"::text, COUNT(*) FROM \"{schema}\".\"{table}\" \
+         {where} GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+        col = esc_col, schema = esc_schema, table = esc_table, where = where_clause
+    );
+
+    let top_msgs = client.simple_query(&top_sql).await?;
+    let mut top_values = Vec::new();
+    for msg in &top_msgs {
+        if let tokio_postgres::SimpleQueryMessage::Row(r) = msg {
+            let val = r.get(0).unwrap_or("NULL").to_owned();
+            let cnt: i64 = r.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            top_values.push((val, cnt));
+        }
+    }
+
+    Ok(ColumnStatsResult {
+        col_name: col_name.to_owned(),
+        total,
+        null_count: total - non_null,
+        distinct,
+        min_len,
+        max_len,
+        top_values,
+    })
+}

@@ -35,6 +35,7 @@ src/
 ├── app.rs            — PgClientApp, eframe::App impl, event loop
 ├── config.rs         — ConnectionProfile, AppConfig (TOML)
 ├── history.rs        — QueryHistory (kalıcı, max 500)
+├── snippets.rs       — Saved queries (Ctrl+Shift+S, name+SQL, TOML-persisted)
 ├── i18n.rs           — Lang enum (En|Tr), I18n(pub Lang) newtype, ~100+ method
 ├── logger.rs         — crash log (panic hook)
 ├── db/

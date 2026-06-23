@@ -1,6 +1,6 @@
 [package]
 name = "ferox-pg"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2024"
 description = "Blazing-fast lightweight PostgreSQL client built in Rust"
 authors = ["frkdrgt"]
