@@ -126,7 +126,7 @@ cargo build --release # ~6.9MB binary, LTO
 - Two-step flow: nl_submit → LoadFullSchemaForAi → AiSchemaReady → NlToSql
 
 ## Kalan İşler
-- Büyük sonuç setlerinde (>10k satır) column width hesabı lazy yap
+Şu an açık madde yok.
 
 ## UI Tema Notları
 `src/app.rs:configure_style()` — JetBrains Darcula paleti:

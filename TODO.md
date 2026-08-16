@@ -2,8 +2,7 @@
 
 ## Aktif
 
-### Küçük Eksikler
-- [ ] Büyük sonuç setlerinde (>10k satır) column width hesabını lazy yap
+Şu an açık madde yok.
 
 ---
 
@@ -12,6 +11,7 @@
 ### Faz 13 — Küçük UX Tamamlamaları ✓
 - [x] Sorgu editöründe Ctrl+A ile tümünü seç
 - [x] NULL değerlere özel renk tercihi Settings menüsünden config'e kaydediliyor (`AppConfig.null_color`)
+- [x] Büyük sonuç setlerinde column width hesabı zaten lazy — `compute_col_widths()` sadece ilk 200 satırı örnekliyor, satır sayısından bağımsız sabit maliyetli; ayrıca sonuç geldiğinde bir kez çalışıyor (frame başına değil)
 
 ### v0.2.9 — Saved Queries, Autocomplete Preload, DB-side Stats ✓
 - [x] Saved queries (snippets) — Ctrl+Shift+S, TOML-persisted, aranabilir panel
