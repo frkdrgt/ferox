@@ -3,7 +3,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::db::query::{CellValue, QueryResult};
 use crate::i18n::I18n;
 
-const NULL_COLOR: egui::Color32 = egui::Color32::from_rgb(128, 100, 100);
+const DEFAULT_NULL_COLOR: egui::Color32 = egui::Color32::from_rgb(128, 100, 100);
 const NULL_LABEL: &str = "<null>";
 
 // ── Output returned by show() ─────────────────────────────────────────────────
@@ -50,6 +50,8 @@ pub struct ResultTable<'a> {
     pub edit_value: String,
     /// Request focus on the TextEdit this frame.
     pub edit_needs_focus: bool,
+    /// Color used to render `<null>` cells (user-configurable).
+    pub null_color: egui::Color32,
 }
 
 impl<'a> ResultTable<'a> {
@@ -69,6 +71,7 @@ impl<'a> ResultTable<'a> {
             edit_col: None,
             edit_value: String::new(),
             edit_needs_focus: false,
+            null_color: DEFAULT_NULL_COLOR,
         }
     }
 
@@ -126,6 +129,7 @@ impl<'a> ResultTable<'a> {
         let edit_row = self.edit_row;
         let edit_col = self.edit_col;
         let edit_needs_focus = self.edit_needs_focus;
+        let null_color = self.null_color;
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
 
@@ -219,7 +223,7 @@ impl<'a> ResultTable<'a> {
                                 // Render content FIRST so the allocate_rect below comes last
                                 // in egui's widget registry — later allocation wins hover priority,
                                 // which makes right-click work even when the pointer is over the text.
-                                render_cell(ui, cell);
+                                render_cell(ui, cell, null_color);
 
                                 // Claim the full cell rect AFTER render so context_menu responds
                                 // to secondary clicks anywhere in the cell (not just empty space).
@@ -321,11 +325,11 @@ impl<'a> ResultTable<'a> {
 
 // ── Cell renderers ────────────────────────────────────────────────────────────
 
-fn render_cell(ui: &mut egui::Ui, cell: &CellValue) {
+fn render_cell(ui: &mut egui::Ui, cell: &CellValue, null_color: egui::Color32) {
     match cell {
         CellValue::Null => {
             ui.add(egui::Label::new(
-                egui::RichText::new(NULL_LABEL).color(NULL_COLOR).italics(),
+                egui::RichText::new(NULL_LABEL).color(null_color).italics(),
             ));
         }
         CellValue::Boolean(true) => {

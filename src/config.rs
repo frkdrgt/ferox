@@ -174,7 +174,11 @@ impl Default for AiConfig {
 
 // ── App config ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+fn default_null_color() -> [u8; 3] {
+    [128, 100, 100]
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub connections: Vec<ConnectionProfile>,
@@ -182,6 +186,20 @@ pub struct AppConfig {
     pub language: Lang,
     #[serde(default)]
     pub ai: AiConfig,
+    /// RGB color used to render `<null>` cells in the result table.
+    #[serde(default = "default_null_color")]
+    pub null_color: [u8; 3],
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            connections: Vec::new(),
+            language: Lang::default(),
+            ai: AiConfig::default(),
+            null_color: default_null_color(),
+        }
+    }
 }
 
 impl AppConfig {

@@ -1,22 +1,40 @@
 # Ferox — Yapılacaklar
 
-## Aktif (Faz 8)
-
-### Tamamlandı
-- [x] **Multi-statement tabs** — birden fazla SELECT varsa her biri ayrı tab'da açılıyor (`ExecuteMulti` + `set_multi_results_for`)
-- [x] **Sütun istatistikleri** — column header sağ-tık → null %, distinct, min/max len, top-10 değer (client-side, DB roundtrip yok)
-- [x] **Fonksiyon/prosedür browser** — sidebar schema tree altında FUNCTIONS bölümü; lazy-load, ikon, arg signature, return type, sağ-tık menüsü
-- [x] **Schema Diff** — Query → Schema Diff menüsü; iki bağlantı/şema karşılaştırması; +added ~changed -removed tablolar + per-column diff; `information_schema.columns` üzerinden client-side hesaplama
+## Aktif
 
 ### Küçük Eksikler
-- [ ] Bağlantı dialog'unda "Test Connection" butonu
-- [ ] Sorgu editöründe Ctrl+A ile tümünü seç
-- [ ] NULL değerlere özel renk tercihini config'e kaydet
 - [ ] Büyük sonuç setlerinde (>10k satır) column width hesabını lazy yap
 
 ---
 
 ## Tamamlanan
+
+### Faz 13 — Küçük UX Tamamlamaları ✓
+- [x] Sorgu editöründe Ctrl+A ile tümünü seç
+- [x] NULL değerlere özel renk tercihi Settings menüsünden config'e kaydediliyor (`AppConfig.null_color`)
+
+### v0.2.9 — Saved Queries, Autocomplete Preload, DB-side Stats ✓
+- [x] Saved queries (snippets) — Ctrl+Shift+S, TOML-persisted, aranabilir panel
+- [x] Bağlantıda tablo/sütun ön-yükleme — schema açmadan autocomplete çalışır
+- [x] DB-side column statistics — tam tablo üzerinden hesaplanır (browse filtresine duyarlı)
+- [x] Crate adı `ferox-pg`'ye çevrildi (crates.io yayını için)
+
+### v0.2.8 — Trigger/Sequence Browser, Browse Filter ✓
+- [x] Trigger browser (TRIGGERS bölümü, sağ-tık aksiyonlar)
+- [x] Sequence browser (SEQUENCES bölümü, Set Value / Show DDL)
+- [x] Browse-mode WHERE filtresi (persist, 🔍 badge)
+- [x] Cell sağ-tık menüsü — View Full Value / Copy Value
+- [x] Ctrl+F ile sonuçlarda arama (Find in Results)
+- [x] Sonucu Markdown/HTML olarak kopyalama
+- [x] Sütun genişliği kalıcılığı (aynı sorgu tekrar çalıştırıldığında korunur)
+
+### v0.2.7 — Inline Cell Editing, DDL Viewer ✓
+- [x] Inline cell editing — tüm tipler için, çift tık ile (query-mode dahil)
+- [x] DDL viewer yeni tab'da açılıyor (Show DDL / Show Definition)
+- [x] Sidebar collapsible alt-bölümler (Columns/Indexes/FK)
+- [x] Schema-expand olmadan autocomplete (schema açılınca tek sorgu ile tüm sütunlar)
+- [x] Tablo alias önerisi autocomplete'te
+- [x] Bağlantı dialog'unda "Test Connection" butonu
 
 ### Faz 8 — Multi-statement Tabs + Sütun İstatistikleri ✓
 - [x] Multi-statement sorgu çalıştırınca her SELECT sonucu ayrı tab'da açılıyor

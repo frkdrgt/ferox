@@ -571,6 +571,13 @@ impl PgClientApp {
                     }
                 });
                 ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(i18n.lbl_null_color());
+                    if ui.color_edit_button_srgb(&mut self.config.null_color).changed() {
+                        let _ = self.config.save();
+                    }
+                });
+                ui.separator();
                 ui.menu_button("AI", |ui| {
                     // ── Provider selector ─────────────────────────────────────
                     ui.label("Provider:");
@@ -1177,6 +1184,8 @@ impl eframe::App for PgClientApp {
                 .map(|c| (c.id, c.name.as_str(), &c.db_tx))
                 .collect();
             let ai_enabled = self.config.ai.is_configured();
+            let [r, g, b] = self.config.null_color;
+            let null_color = egui::Color32::from_rgb(r, g, b);
             self.tab_manager.show(
                 ui,
                 &conn_refs,
@@ -1184,6 +1193,7 @@ impl eframe::App for PgClientApp {
                 &mut self.snippets,
                 &i18n,
                 ai_enabled,
+                null_color,
             );
         });
 

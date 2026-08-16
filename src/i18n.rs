@@ -560,6 +560,7 @@ impl I18n {
 
     // ── Settings / About ──────────────────────────────────────────────────────
     pub fn menu_settings(&self) -> &'static str { self.t("Settings", "Ayarlar") }
+    pub fn lbl_null_color(&self) -> &'static str { self.t("NULL cell color", "NULL hücre rengi") }
     pub fn menu_about(&self) -> &'static str { self.t("About", "Hakkında") }
     pub fn about_version(&self) -> &'static str { self.t("Version", "Sürüm") }
     pub fn about_repository(&self) -> &'static str { self.t("Repository", "Kaynak Kod") }

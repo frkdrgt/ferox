@@ -6,8 +6,10 @@ Hedef: DBeaver/DataGrip'e alternatif, <50MB RAM, <200ms startup.
 
 **Gerçek ölçümler (v0.2.3):** ~45–47 MB RAM, 6.9 MB binary (release LTO)
 
+Not: Cargo paket adı `ferox-pg` (crates.io yayını için, v0.2.9'da yeniden adlandırıldı); binary adı hâlâ `ferox`.
+
 ## Tech Stack
-- **GUI**: egui 0.27 + eframe (immediate-mode, pure Rust; `accesskit` devre dışı)
+- **GUI**: egui 0.29 + eframe (immediate-mode, pure Rust; `accesskit` devre dışı)
 - **DB Driver**: tokio-postgres 0.7 (async, pure Rust; `simple_query` text protokol)
 - **Async**: tokio (current-thread runtime, ayrı std::thread içinde)
 - **TLS**: native-tls + postgres-native-tls
@@ -109,6 +111,10 @@ cargo build --release # ~6.9MB binary, LTO
 - **Faz 7**: EN/TR i18n, Settings menüsü, About dialog, app title → ferox, v0.2.3 ✓
 - **Faz 8**: Schema diff, function browser, column stats, perf (display_indices cache, col widths, F5 no-flash) ✓
 - **Faz 9**: AI NL→SQL — Claude/Groq/Ollama/OpenAI/custom, live DB schema context, Settings→AI, v0.2.6 ✓
+- **Faz 10**: Inline cell editing (tüm tipler), DDL viewer yeni tab'da, sidebar collapsible alt-bölümler, schema-expand olmadan autocomplete, tablo alias önerisi, v0.2.7 ✓
+- **Faz 11**: Trigger/sequence browser, browse-mode WHERE filtresi, cell sağ-tık menüsü, Ctrl+F sonuç arama, sonucu MD/HTML kopyalama, sütun genişliği kalıcılığı, v0.2.8 ✓
+- **Faz 12**: Saved queries (snippets, Ctrl+Shift+S), bağlantıda tablo/sütun ön-yükleme, DB-side column stats, crate adı `ferox-pg`, v0.2.9 ✓
+- **Faz 13**: Ctrl+A sorgu editöründe tümünü seç, NULL hücre rengi Settings'ten config'e kaydediliyor ✓
 
 ## AI Modülü (src/ai.rs)
 - `AiHandle::spawn()` — ayrı std::thread + kendi current_thread tokio runtime'ı
@@ -120,9 +126,7 @@ cargo build --release # ~6.9MB binary, LTO
 - Two-step flow: nl_submit → LoadFullSchemaForAi → AiSchemaReady → NlToSql
 
 ## Kalan İşler
-- Ctrl+A ile tümünü seç (sorgu editörü)
-- NULL renk tercihi config'e kaydet
-- Büyük sonuç setlerinde column width hesabı lazy yap
+- Büyük sonuç setlerinde (>10k satır) column width hesabı lazy yap
 
 ## UI Tema Notları
 `src/app.rs:configure_style()` — JetBrains Darcula paleti:

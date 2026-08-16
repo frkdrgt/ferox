@@ -657,6 +657,7 @@ impl QueryPanel {
         snippets: &mut Snippets,
         i18n: &I18n,
         ai_enabled: bool,
+        null_color: egui::Color32,
     ) {
         // Auto-refresh after a DML (UPDATE/INSERT/DELETE) in browse mode.
         if self.pending_refresh {
@@ -900,6 +901,23 @@ impl QueryPanel {
                     .min_scrolled_height(editor_height)
                     .show(ui, |ui| ui.add(editor));
                 let resp = scroll_out.inner;
+
+                // Ctrl+A — select all text in the SQL editor.
+                if resp.has_focus()
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::A))
+                {
+                    if let Some(mut state) = egui::TextEdit::load_state(
+                        ui.ctx(),
+                        egui::Id::new("ferox_sql_editor"),
+                    ) {
+                        let char_count = self.sql.chars().count();
+                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                            egui::text::CCursor::new(0),
+                            egui::text::CCursor::new(char_count),
+                        )));
+                        state.store(ui.ctx(), egui::Id::new("ferox_sql_editor"));
+                    }
+                }
 
                 // Handle Enter acceptance (consumed before the TextEdit).
                 if enter_accepted {
@@ -1329,6 +1347,7 @@ impl QueryPanel {
                                 std::mem::take(&mut self.sorted_indices),
                                 self.col_widths.clone(),
                             );
+                            table.null_color = null_color;
                             table.db_sort_mode = self.browse.is_some();
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);

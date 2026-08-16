@@ -593,6 +593,7 @@ impl TabManager {
         snippets: &mut crate::snippets::Snippets,
         i18n: &I18n,
         ai_enabled: bool,
+        null_color: egui::Color32,
     ) {
         // ── Keyboard shortcuts ────────────────────────────────────────────────
         let active_conn_id = self.active_tab_conn_id();
@@ -683,7 +684,7 @@ impl TabManager {
                 if let Some(db_tx) = db_tx_opt {
                     let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if let Some(p) = self.tabs[active_idx].panel_mut() {
-                        p.show(ui, db_tx, history, snippets, i18n, ai_enabled);
+                        p.show(ui, db_tx, history, snippets, i18n, ai_enabled, null_color);
                     }
                     let is_running_now = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
                     if !was_running && is_running_now {
