@@ -52,8 +52,7 @@ Aynı connection'da iki sorguyu aynı anda çalıştır. Büyük mimari değişi
 
 | Sorun | Çözüm |
 |---|---|
-| Ctrl+A editörde çalışmıyor | `egui::TextEdit` key event inject |
-| NULL rengi config'e kaydedilmiyor | `AppConfig`'e `null_color: [u8;3]` ekle |
 | ER diyagramında çok kolonlu tablo taşıyor | Node max-height + scroll veya `...` truncate |
 | Dashboard tablolarında sıralama yok | `sort_by` state ekle |
-| Column genişlik hesabı her frame çalışıyor | Dirty flag ile lazy yap |
+
+✓ Çözüldü: Ctrl+A (v-next), NULL rengi config'e kaydedilmiyor (v-next), column genişlik hesabı — zaten sample-based ve tek seferlik olduğu doğrulandı.
