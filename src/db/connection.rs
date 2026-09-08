@@ -53,6 +53,14 @@ pub enum DbCommand {
     LoadSequences { schema: String },
     /// Compute column statistics from the full table (used for browse-mode stats).
     LoadColumnStats { schema: String, table: String, col_name: String, filter: String },
+    /// Write an already-fetched row subset to disk — used for "export selected rows".
+    /// Does NOT touch the DB; only reuses the CSV/JSON writers on the worker thread so
+    /// the UI thread never does file I/O (see CLAUDE.md thread-separation rule).
+    ExportRows { columns: Vec<String>, rows: Vec<Vec<crate::db::query::CellValue>>, path: String, json: bool },
+    /// Import a local CSV file into a table via `COPY ... FROM STDIN`. `columns`
+    /// are the CSV file's own header names (Postgres skips the header line itself
+    /// via `HEADER true`) — see CLAUDE.md for why this bypasses `execute_query`.
+    ImportCsv { schema: String, table: String, path: String, columns: Vec<String> },
 }
 
 /// Events sent from the DB worker → UI thread.
@@ -107,6 +115,10 @@ pub enum DbEvent {
     TransactionClosed,
     /// Column statistics computed from the full table (response to LoadColumnStats).
     ColumnStatsReady(metadata::ColumnStatsResult),
+    /// CSV import finished — number of rows copied.
+    ImportDone(u64),
+    /// CSV import failed.
+    ImportError(String),
 }
 
 /// Handle that owns the DB background thread.
@@ -381,6 +393,28 @@ async fn db_worker(cmd_rx: Receiver<DbCommand>, evt_tx: Sender<DbEvent>) {
                             }
                         }
                     }
+                }
+            }
+
+            DbCommand::ExportRows { columns, rows, path, json } => {
+                let result = QueryResult { columns, rows, rows_affected: None, elapsed_ms: 0.0 };
+                let write = if json { export_json(&result, &path) } else { export_csv(&result, &path) };
+                match write {
+                    Ok(_) => { let _ = evt_tx.send(DbEvent::ExportDone(path)); }
+                    Err(e) => { let _ = evt_tx.send(DbEvent::QueryError(e.to_string())); }
+                }
+            }
+
+            DbCommand::ImportCsv { schema, table, path, columns } => {
+                if ensure_connected(&mut client, &mut cancel_handle, &last_profile, &evt_tx).await {
+                    if let Some(c) = &mut client {
+                        match import_csv(c, &schema, &table, &path, &columns).await {
+                            Ok(rows) => { let _ = evt_tx.send(DbEvent::ImportDone(rows)); }
+                            Err(e) => { let _ = evt_tx.send(DbEvent::ImportError(e.to_string())); }
+                        }
+                    }
+                } else {
+                    let _ = evt_tx.send(DbEvent::ImportError("Not connected".into()));
                 }
             }
 
@@ -735,6 +769,48 @@ async fn execute_query(
     Ok(QueryResult { columns: vec![], rows: vec![], rows_affected, elapsed_ms: 0.0 })
 }
 
+/// Import a local CSV file into `schema.table` via `COPY ... FROM STDIN`.
+///
+/// Deliberate, documented exception to the "every query goes through
+/// execute_query()/simple_query" rule (see CLAUDE.md): `Client::copy_in` always
+/// uses the extended protocol (Parse/Describe/Bind/Sync) internally — there is
+/// no simple_query-based COPY path in tokio-postgres.
+///
+/// `columns` are the CSV file's own header names; Postgres skips that header
+/// line itself via `HEADER true`, so no client-side CSV parsing of the data is
+/// needed — the file's bytes are streamed through unchanged in 64KB chunks
+/// (never buffering the whole file), which also keeps a large import from
+/// blowing the app's RAM budget.
+async fn import_csv(
+    client: &mut tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+    path: &str,
+    columns: &[String],
+) -> Result<u64> {
+    use futures_util::SinkExt;
+    use tokio::io::AsyncReadExt;
+
+    let col_list = columns.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "COPY \"{schema}\".\"{table}\" ({col_list}) FROM STDIN WITH (FORMAT csv, HEADER true)"
+    );
+    let stmt = client.prepare(&sql).await?;
+    let mut sink = Box::pin(client.copy_in(&stmt).await?);
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        sink.send(bytes::Bytes::copy_from_slice(&buf[..n])).await?;
+    }
+    let rows = sink.as_mut().finish().await?;
+    Ok(rows)
+}
+
 /// Format an anyhow error as a human-readable string.
 /// For tokio-postgres `DbError`s the raw string looks like
 /// `db error: ERROR: relation "x" does not exist` — we strip the redundant
@@ -751,7 +827,7 @@ fn fmt_pg_error(e: &anyhow::Error) -> String {
     e.to_string()
 }
 
-fn export_csv(result: &QueryResult, path: &str) -> Result<()> {
+pub(crate) fn export_csv(result: &QueryResult, path: &str) -> Result<()> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
 
@@ -776,7 +852,7 @@ fn export_csv(result: &QueryResult, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn export_json(result: &QueryResult, path: &str) -> Result<()> {
+pub(crate) fn export_json(result: &QueryResult, path: &str) -> Result<()> {
     use serde_json::{json, Value};
 
     let rows: Vec<Value> = result
@@ -804,4 +880,71 @@ fn export_json(result: &QueryResult, path: &str) -> Result<()> {
     let json_str = serde_json::to_string_pretty(&rows)?;
     std::fs::write(path, json_str)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ConnectionProfile, SslMode};
+
+    fn test_profile() -> ConnectionProfile {
+        ConnectionProfile {
+            name: "ferox-test".into(),
+            host: std::env::var("FEROX_TEST_PG_HOST").unwrap_or_else(|_| "localhost".into()),
+            port: std::env::var("FEROX_TEST_PG_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(5432),
+            user: std::env::var("FEROX_TEST_PG_USER").unwrap_or_else(|_| "postgres".into()),
+            password: std::env::var("FEROX_TEST_PG_PASSWORD").unwrap_or_else(|_| "postgres".into()),
+            database: std::env::var("FEROX_TEST_PG_DATABASE").unwrap_or_else(|_| "postgres".into()),
+            ssl: SslMode::Disable,
+            ssh_tunnel: None,
+            group: None,
+            color: None,
+        }
+    }
+
+    /// Exercises the real `COPY ... FROM STDIN` protocol path against a live
+    /// Postgres — the riskiest new code path added for CSV import, since it
+    /// bypasses `simple_query`/`execute_query` entirely (see CLAUDE.md). `#[ignore]`d
+    /// because it needs a reachable local Postgres. Run with:
+    /// `cargo test --lib db::connection::tests::import_csv_roundtrip -- --ignored`
+    /// (set `FEROX_TEST_PG_PASSWORD` etc. if your local instance isn't
+    /// postgres/postgres@localhost:5432/postgres).
+    #[tokio::test]
+    #[ignore]
+    async fn import_csv_roundtrip() {
+        let (mut client, _cancel) = connect_pg(&test_profile()).await.expect("connect failed — is Postgres reachable?");
+
+        client.simple_query("DROP TABLE IF EXISTS ferox_import_test;").await.unwrap();
+        client
+            .simple_query("CREATE TABLE ferox_import_test (id int, name text);")
+            .await
+            .unwrap();
+
+        let csv_path = std::env::temp_dir().join(format!("ferox_import_test_{}.csv", std::process::id()));
+        std::fs::write(&csv_path, "id,name\n1,alpha\n2,beta\n3,gamma\n").unwrap();
+
+        let rows = import_csv(
+            &mut client,
+            "public",
+            "ferox_import_test",
+            csv_path.to_str().unwrap(),
+            &["id".to_string(), "name".to_string()],
+        )
+        .await
+        .expect("import_csv failed");
+        assert_eq!(rows, 3);
+
+        let result = execute_query(&mut client, "SELECT id, name FROM ferox_import_test ORDER BY id;")
+            .await
+            .unwrap();
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0][1].to_string(), "alpha");
+        assert_eq!(result.rows[2][1].to_string(), "gamma");
+
+        client.simple_query("DROP TABLE ferox_import_test;").await.unwrap();
+        let _ = std::fs::remove_file(&csv_path);
+    }
 }

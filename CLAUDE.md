@@ -5,6 +5,11 @@ Hafif bir masaüstü PostgreSQL client uygulaması. Rust + egui/eframe ile yazı
 Hedef: DBeaver/DataGrip'e alternatif, <50MB RAM, <200ms startup.
 
 **Gerçek ölçümler (v0.2.3):** ~45–47 MB RAM, 6.9 MB binary (release LTO)
+**v-next:** binary 9.86 MB'a çıktı (+%43) — sebebi `keyring` crate'in Windows backend'i
+(`windows-native-keyring-store`), beklenenin aksine `security-framework`/`zbus` gibi zaten
+linkli bir şeyin üstüne binmiyor, tam bir `regex` motoru (regex+aho-corasick+regex-automata)
+getiriyor. Bilinçli bir trade-off olarak kabul edildi (gerçek şifre şifrelemesinin güvenlik
+değeri arttı) — ama gelecekte RAM/boyut bütçesi tekrar gündeme gelirse ilk bakılacak yer burası.
 
 Not: Cargo paket adı `ferox-pg` (crates.io yayını için, v0.2.9'da yeniden adlandırıldı); binary adı hâlâ `ferox`.
 
@@ -40,6 +45,7 @@ src/
 ├── snippets.rs       — Saved queries (Ctrl+Shift+S, name+SQL, TOML-persisted)
 ├── i18n.rs           — Lang enum (En|Tr), I18n(pub Lang) newtype, ~100+ method
 ├── logger.rs         — crash log (panic hook)
+├── secrets.rs        — OS keychain (DB/SSH şifreleri, AI API key) — `keyring` crate
 ├── db/
 │   ├── mod.rs
 │   ├── connection.rs — DbCommand/DbEvent, db_worker, execute_query (simple_query)
@@ -57,7 +63,8 @@ src/
     ├── explain.rs        — EXPLAIN ANALYZE ağaç görünümü
     ├── er_diagram.rs     — ER diyagramı
     ├── autocomplete.rs   — Tablo/sütun otomatik tamamlama
-    └── syntax.rs         — Sıfırdan SQL tokenizer (keyword/type/string/comment)
+    ├── import_dialog.rs  — CSV import onay diyaloğu (kolon isimleri CSV header'ından)
+    └── syntax.rs         — Sıfırdan SQL/JSON tokenizer (keyword/type/string/comment)
 ```
 
 ## Önemli Dosyalar
@@ -78,6 +85,9 @@ cargo build --release # ~6.9MB binary, LTO
 - Yeni DB sorguları `src/db/metadata.rs` veya `src/db/query.rs`'e ekle
 - `DbCommand`/`DbEvent` enum'larını `src/db/connection.rs`'de tut
 - Tüm sorgular `execute_query()` üzerinden geçmeli → `simple_query` protokol
+  - **Tek istisna:** `DbCommand::ImportCsv` (CSV import, `import_csv()` fonksiyonu) —
+    tokio-postgres'in `copy_in()`'i her zaman extended protokol (`prepare()`) kullanır,
+    `simple_query` üzerine bindirilemez. Bilinçli ve dokümante edilmiş tek istisna.
 
 ## execute_query Kritik Notlar
 - Tüm SQL'ler (SELECT, DML, DDL) `simple_query` ile çalışır — noktalı virgül ve çoklu statement desteklenir
@@ -85,6 +95,8 @@ cargo build --release # ~6.9MB binary, LTO
 - Boş tablo/view (0 satır): `prepare()` ile sütun isimleri kurtarılır
 - SELECT-like sorgular hiçbir zaman `rows_affected` set etmez — `set_result()` DML detection'ı bu sayede doğru çalışır
 - Hard cap: 50.000 satır/sonuç (unbounded memory büyümesini önler)
+- CSV import bu kuralın dışında (yukarı bakın) — `COPY ... FROM STDIN` ile dosya
+  64KB'lık parçalar hâlinde akıtılır, RAM'e tam yüklenmez
 
 ## Tab Yönetimi (tab_manager.rs)
 - Tabloya tıklanınca: mevcut tab bulunursa switch, aktif tab boşsa reuse, doluysa yeni tab
@@ -115,6 +127,9 @@ cargo build --release # ~6.9MB binary, LTO
 - **Faz 11**: Trigger/sequence browser, browse-mode WHERE filtresi, cell sağ-tık menüsü, Ctrl+F sonuç arama, sonucu MD/HTML kopyalama, sütun genişliği kalıcılığı, v0.2.8 ✓
 - **Faz 12**: Saved queries (snippets, Ctrl+Shift+S), bağlantıda tablo/sütun ön-yükleme, DB-side column stats, crate adı `ferox-pg`, v0.2.9 ✓
 - **Faz 13**: Ctrl+A sorgu editöründe tümünü seç, NULL hücre rengi Settings'ten config'e kaydediliyor ✓
+- **Faz 14**: Operatör tabanlı WHERE filtre builder, toplu satır seçimi/kopyalama/export/silme,
+  Duplicate Row, bağlantı renk etiketi (tab/switcher), şifre+API key OS keychain'e taşındı
+  (`keyring`), JSON/JSONB pretty-print (View Full Value popup), CSV import (`COPY FROM STDIN`) ✓
 
 ## AI Modülü (src/ai.rs)
 - `AiHandle::spawn()` — ayrı std::thread + kendi current_thread tokio runtime'ı

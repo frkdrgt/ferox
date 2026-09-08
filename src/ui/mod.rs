@@ -3,6 +3,7 @@ pub mod er_diagram;
 pub mod connection_dialog;
 pub mod dashboard;
 pub mod explain;
+pub mod import_dialog;
 pub mod join_builder;
 pub mod query_panel;
 pub mod result_table;

@@ -1,6 +1,6 @@
 [package]
 name = "ferox-pg"
-version = "0.2.9"
+version = "0.3.0"
 edition = "2024"
 description = "Blazing-fast lightweight PostgreSQL client built in Rust"
 authors = ["frkdrgt"]
@@ -26,7 +26,11 @@ native-tls = "0.2"
 postgres-native-tls = "0.5"
 
 # Async runtime — rt-multi-thread not needed; DB worker uses its own current_thread rt
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "io-util"] }
+# Already resolved transitively via tokio-postgres — pinned as direct deps only
+# for CSV import's COPY-in streaming (SinkExt / Bytes); no new binary weight.
+futures-util = "0.3"
+bytes = "1"
 
 # Config / serialization
 serde = { version = "1", features = ["derive"] }
@@ -58,6 +62,11 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 hex = "0.4"
 sqlformat = "0.2"
+
+# OS keychain (Credential Manager / Keychain / Secret Service) for connection
+# passwords & API keys — rides on security-framework (already linked via native-tls)
+# and zbus (already linked via rfd→ashpd on Linux), so marginal cost is low.
+keyring = "4"
 
 [profile.release]
 opt-level = 3

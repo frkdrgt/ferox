@@ -200,7 +200,7 @@ impl SchemaDiff {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        conns: &[(usize, &str, &Sender<DbCommand>)],
+        conns: &[(usize, &str, &Sender<DbCommand>, egui::Color32)],
         _i18n: &I18n,
     ) {
         ui.vertical(|ui| {
@@ -211,7 +211,7 @@ impl SchemaDiff {
                 egui::ComboBox::from_id_source("diff_conn_a")
                     .selected_text(conn_name(conns, self.conn_id_a))
                     .show_ui(ui, |ui| {
-                        for (id, name, _) in conns {
+                        for (id, name, _, _) in conns {
                             ui.selectable_value(&mut self.conn_id_a, *id, *name);
                         }
                     });
@@ -228,7 +228,7 @@ impl SchemaDiff {
                 egui::ComboBox::from_id_source("diff_conn_b")
                     .selected_text(conn_name(conns, self.conn_id_b))
                     .show_ui(ui, |ui| {
-                        for (id, name, _) in conns {
+                        for (id, name, _, _) in conns {
                             ui.selectable_value(&mut self.conn_id_b, *id, *name);
                         }
                     });
@@ -378,17 +378,17 @@ impl SchemaDiff {
         });
     }
 
-    fn start_compare(&mut self, conns: &[(usize, &str, &Sender<DbCommand>)]) {
+    fn start_compare(&mut self, conns: &[(usize, &str, &Sender<DbCommand>, egui::Color32)]) {
         let req_a = next_request_id();
         let req_b = next_request_id();
 
-        if let Some((_, _, tx)) = conns.iter().find(|(id, _, _)| *id == self.conn_id_a) {
+        if let Some((_, _, tx, _)) = conns.iter().find(|(id, _, _, _)| *id == self.conn_id_a) {
             let _ = tx.send(DbCommand::LoadSchemaSnapshot {
                 schema: self.schema_a.clone(),
                 request_id: req_a,
             });
         }
-        if let Some((_, _, tx)) = conns.iter().find(|(id, _, _)| *id == self.conn_id_b) {
+        if let Some((_, _, tx, _)) = conns.iter().find(|(id, _, _, _)| *id == self.conn_id_b) {
             let _ = tx.send(DbCommand::LoadSchemaSnapshot {
                 schema: self.schema_b.clone(),
                 request_id: req_b,
@@ -406,10 +406,10 @@ impl SchemaDiff {
     }
 }
 
-fn conn_name<'a>(conns: &'a [(usize, &'a str, &'a Sender<DbCommand>)], conn_id: usize) -> &'a str {
+fn conn_name<'a>(conns: &'a [(usize, &'a str, &'a Sender<DbCommand>, egui::Color32)], conn_id: usize) -> &'a str {
     conns
         .iter()
-        .find(|(id, _, _)| *id == conn_id)
-        .map(|(_, name, _)| *name)
+        .find(|(id, _, _, _)| *id == conn_id)
+        .map(|(_, name, _, _)| *name)
         .unwrap_or("—")
 }

@@ -279,3 +279,169 @@ pub fn highlight_sql(ui: &egui::Ui, text: &str, wrap_width: f32) -> LayoutJob {
 
     job
 }
+
+// ── JSON tokeniser (for the "View Full Value" popup pretty-printer) ───────────
+//
+// Same hand-rolled, zero-dependency approach as the SQL tokenizer above — the
+// text handed in is already pretty-printed by `serde_json::to_string_pretty`,
+// this only adds color spans on top of it.
+
+#[derive(Clone, Copy, PartialEq)]
+enum JsonTok {
+    Key,
+    String,
+    Number,
+    Literal, // true / false / null
+    Punct,
+    Default,
+}
+
+fn tokenise_json(text: &str) -> Vec<(JsonTok, &str)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(64);
+    let mut i = 0;
+
+    while i < len {
+        // ── String "…" (object key if followed by ':', else a value) ──────────
+        if bytes[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            // Look ahead past whitespace for ':' to classify as a key.
+            let mut j = i;
+            while j < len && (bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            let is_key = j < len && bytes[j] == b':';
+            out.push((if is_key { JsonTok::Key } else { JsonTok::String }, &text[start..i]));
+            continue;
+        }
+
+        // ── Number ─────────────────────────────────────────────────────────────
+        if bytes[i].is_ascii_digit() || (bytes[i] == b'-' && i + 1 < len && bytes[i + 1].is_ascii_digit()) {
+            let start = i;
+            i += 1;
+            while i < len
+                && (bytes[i].is_ascii_digit() || matches!(bytes[i], b'.' | b'e' | b'E' | b'+' | b'-'))
+            {
+                i += 1;
+            }
+            out.push((JsonTok::Number, &text[start..i]));
+            continue;
+        }
+
+        // ── Literal true / false / null ─────────────────────────────────────────
+        if bytes[i].is_ascii_alphabetic() {
+            let start = i;
+            while i < len && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            let word = &text[start..i];
+            let tok = if matches!(word, "true" | "false" | "null") {
+                JsonTok::Literal
+            } else {
+                JsonTok::Default
+            };
+            out.push((tok, word));
+            continue;
+        }
+
+        // ── Punctuation ──────────────────────────────────────────────────────────
+        let ch_len = text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        let chunk = &text[i..i + ch_len];
+        let tok = match bytes[i] {
+            b'{' | b'}' | b'[' | b']' | b':' | b',' => JsonTok::Punct,
+            _ => JsonTok::Default,
+        };
+        out.push((tok, chunk));
+        i += ch_len;
+    }
+
+    out
+}
+
+/// Heuristic: does `s` look like a JSON object/array worth trying to pretty-print?
+/// Cheap prefix/suffix check only — the actual `serde_json::from_str` parse (done
+/// by the caller) is the real validator; this just avoids attempting it on obviously
+/// non-JSON text.
+pub fn looks_like_json(s: &str) -> bool {
+    let t = s.trim();
+    (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))
+}
+
+/// Build a syntax-highlighted `LayoutJob` for already-pretty-printed JSON text.
+pub fn highlight_json(ui: &egui::Ui, text: &str, wrap_width: f32) -> LayoutJob {
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    let pal = if ui.visuals().dark_mode { &DARK } else { &LIGHT };
+
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+
+    for (tok, chunk) in tokenise_json(text) {
+        let color = match tok {
+            JsonTok::Key => pal.keyword,
+            JsonTok::String => pal.string,
+            JsonTok::Number => pal.number,
+            JsonTok::Literal => pal.type_,
+            JsonTok::Punct => pal.operator,
+            JsonTok::Default => pal.default,
+        };
+        job.append(chunk, 0.0, TextFormat {
+            font_id: font_id.clone(),
+            color,
+            ..Default::default()
+        });
+    }
+
+    if job.sections.is_empty() {
+        job.append(text, 0.0, TextFormat {
+            font_id,
+            color: if ui.visuals().dark_mode { DARK.default } else { LIGHT.default },
+            ..Default::default()
+        });
+    }
+
+    job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn looks_like_json_detects_objects_and_arrays() {
+        assert!(looks_like_json(r#"{"a": 1}"#));
+        assert!(looks_like_json(r#"[1, 2, 3]"#));
+        assert!(looks_like_json("  { \"a\": 1 }  ")); // tolerates surrounding whitespace
+        assert!(!looks_like_json("plain text"));
+        assert!(!looks_like_json("2024-01-01"));
+        assert!(!looks_like_json(""));
+    }
+
+    #[test]
+    fn tokenise_json_classifies_keys_vs_string_values() {
+        let toks = tokenise_json(r#"{"name": "alpha"}"#);
+        let kinds: Vec<JsonTok> = toks.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&JsonTok::Key));
+        assert!(kinds.contains(&JsonTok::String));
+    }
+
+    #[test]
+    fn tokenise_json_classifies_literals_and_numbers() {
+        let toks = tokenise_json(r#"{"n": 42, "ok": true, "x": null}"#);
+        let kinds: Vec<JsonTok> = toks.iter().map(|(k, _)| *k).collect();
+        assert!(kinds.contains(&JsonTok::Number));
+        assert!(kinds.contains(&JsonTok::Literal));
+    }
+}

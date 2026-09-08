@@ -140,6 +140,9 @@ struct CellPopup {
     col_idx: usize,
     /// Actual row index in QueryResult (after sort mapping).
     actual_row: usize,
+    /// User toggle: show pretty-printed/highlighted JSON instead of raw text.
+    /// Defaults to on when `value` looks like JSON (see `syntax::looks_like_json`).
+    json_pretty: bool,
 }
 
 // ── Column statistics ─────────────────────────────────────────────────────────
@@ -221,6 +224,82 @@ enum PanelTab {
     Messages,
 }
 
+/// A single comparison operator offered by the structured filter builder.
+/// Renders into a `filter_sql`-compatible WHERE fragment via `to_sql()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterOp {
+    Eq,
+    Neq,
+    Gt,
+    Lt,
+    Gte,
+    Lte,
+    Like,
+    ILike,
+    IsNull,
+    IsNotNull,
+    In,
+}
+
+impl FilterOp {
+    const ALL: [FilterOp; 11] = [
+        FilterOp::Eq, FilterOp::Neq, FilterOp::Gt, FilterOp::Lt, FilterOp::Gte, FilterOp::Lte,
+        FilterOp::Like, FilterOp::ILike, FilterOp::IsNull, FilterOp::IsNotNull, FilterOp::In,
+    ];
+
+    fn label(&self) -> &'static str {
+        match self {
+            FilterOp::Eq => "=",
+            FilterOp::Neq => "!=",
+            FilterOp::Gt => ">",
+            FilterOp::Lt => "<",
+            FilterOp::Gte => ">=",
+            FilterOp::Lte => "<=",
+            FilterOp::Like => "LIKE",
+            FilterOp::ILike => "ILIKE",
+            FilterOp::IsNull => "IS NULL",
+            FilterOp::IsNotNull => "IS NOT NULL",
+            FilterOp::In => "IN",
+        }
+    }
+
+    /// Whether this operator needs a value box (IS NULL / IS NOT NULL don't).
+    fn needs_value(&self) -> bool {
+        !matches!(self, FilterOp::IsNull | FilterOp::IsNotNull)
+    }
+
+    /// Render a single value literal — unquoted if it parses as a plain number,
+    /// quoted (and escaped) otherwise. Matches the heuristic already used by
+    /// `parse_text_cell` in `db/query.rs` for consistency.
+    fn render_value(val: &str) -> String {
+        let trimmed = val.trim();
+        if trimmed.parse::<f64>().is_ok() {
+            trimmed.to_string()
+        } else {
+            format!("'{}'", sql_quote(trimmed))
+        }
+    }
+
+    /// Build a `"col" OP value` WHERE fragment for this operator.
+    fn to_sql(&self, col: &str, val: &str) -> String {
+        match self {
+            FilterOp::IsNull => format!("\"{col}\" IS NULL"),
+            FilterOp::IsNotNull => format!("\"{col}\" IS NOT NULL"),
+            FilterOp::In => {
+                let items: Vec<String> = val
+                    .split(',')
+                    .map(|s| Self::render_value(s))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                format!("\"{col}\" IN ({})", items.join(", "))
+            }
+            FilterOp::Like => format!("\"{col}\" LIKE {}", Self::render_value(val)),
+            FilterOp::ILike => format!("\"{col}\" ILIKE {}", Self::render_value(val)),
+            _ => format!("\"{col}\" {} {}", self.label(), Self::render_value(val)),
+        }
+    }
+}
+
 /// State for table data-browser (separate from free-form SQL editor).
 #[derive(Debug, Clone)]
 struct BrowseState {
@@ -233,6 +312,10 @@ struct BrowseState {
     filter_sql: String,
     /// Snapshot of filter_sql that was used to load the current result page.
     applied_filter: String,
+    /// Structured filter-builder scratch state (column/operator/value picker).
+    filter_builder_col: String,
+    filter_builder_op: FilterOp,
+    filter_builder_val: String,
 }
 
 impl BrowseState {
@@ -245,6 +328,9 @@ impl BrowseState {
             sort_asc: true,
             filter_sql: String::new(),
             applied_filter: String::new(),
+            filter_builder_col: String::new(),
+            filter_builder_op: FilterOp::Eq,
+            filter_builder_val: String::new(),
         }
     }
 
@@ -303,6 +389,11 @@ pub struct QueryPanel {
     pending_refresh: bool,
     /// Floating popup showing the full value of a double-clicked cell.
     cell_popup: Option<CellPopup>,
+    /// Multi-row selection, persisted across frames (actual row indices).
+    selected_rows: std::collections::BTreeSet<usize>,
+    row_select_anchor: Option<usize>,
+    /// Awaiting user confirmation before running a bulk DELETE (actual row indices).
+    pending_bulk_delete: Option<Vec<usize>>,
     /// Client-side filter text for the result table.
     result_filter: String,
     /// Currently selected cell (display_row, col_idx) for Ctrl+C.
@@ -384,6 +475,9 @@ impl Default for QueryPanel {
             pk_cols: HashMap::new(),
             pending_refresh: false,
             cell_popup: None,
+            selected_rows: std::collections::BTreeSet::new(),
+            row_select_anchor: None,
+            pending_bulk_delete: None,
             result_filter: String::new(),
             selected_cell: None,
             sorted_indices: Vec::new(),
@@ -544,6 +638,11 @@ impl QueryPanel {
     pub fn set_export_done(&mut self, path: String) {
         let i18n = I18n::new(self.lang);
         self.push_log(LogEntry::info(i18n.log_exported(&path)));
+    }
+
+    pub fn set_import_done(&mut self, rows: u64) {
+        let i18n = I18n::new(self.lang);
+        self.push_log(LogEntry::info(i18n.import_csv_done(rows)));
     }
 
     pub fn set_col_stats(&mut self, result: crate::db::metadata::ColumnStatsResult) {
@@ -1023,6 +1122,13 @@ impl QueryPanel {
         // ── Browse-mode banner ───────────────────────────────────────────────
         let mut browse_exit = false;
         let mut browse_filter_reload = false;
+        // Column names for the structured filter-builder dropdown — sourced from
+        // the currently-loaded result set, so no extra metadata plumbing is needed.
+        let browse_columns: Vec<String> = self
+            .result
+            .as_ref()
+            .map(|r| r.columns.clone())
+            .unwrap_or_default();
         if let Some(state) = &mut self.browse {
             egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
@@ -1085,6 +1191,60 @@ impl QueryPanel {
                             state.applied_filter.clear();
                             state.page = 0;
                             browse_filter_reload = true;
+                        }
+                    });
+                    // Row 3: structured filter builder — picks column/operator/value and
+                    // appends a rendered WHERE fragment into `filter_sql` above, so the
+                    // execution path (build_sql / LoadColumnStats) needs no changes.
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("filter_builder_col")
+                            .selected_text(if state.filter_builder_col.is_empty() {
+                                i18n.filter_builder_col_hint()
+                            } else {
+                                state.filter_builder_col.as_str()
+                            })
+                            .show_ui(ui, |ui| {
+                                for col in &browse_columns {
+                                    ui.selectable_value(
+                                        &mut state.filter_builder_col,
+                                        col.clone(),
+                                        col,
+                                    );
+                                }
+                            });
+                        egui::ComboBox::from_id_salt("filter_builder_op")
+                            .selected_text(state.filter_builder_op.label())
+                            .show_ui(ui, |ui| {
+                                for op in FilterOp::ALL {
+                                    ui.selectable_value(
+                                        &mut state.filter_builder_op,
+                                        op,
+                                        op.label(),
+                                    );
+                                }
+                            });
+                        if state.filter_builder_op.needs_value() {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.filter_builder_val)
+                                    .hint_text(i18n.filter_builder_val_hint())
+                                    .desired_width(120.0),
+                            );
+                        }
+                        if ui
+                            .small_button(i18n.btn_add_filter())
+                            .on_hover_text(i18n.hover_add_filter())
+                            .clicked()
+                            && !state.filter_builder_col.is_empty()
+                        {
+                            let fragment = state
+                                .filter_builder_op
+                                .to_sql(&state.filter_builder_col, &state.filter_builder_val);
+                            if state.filter_sql.trim().is_empty() {
+                                state.filter_sql = fragment;
+                            } else {
+                                state.filter_sql = format!("{} AND {}", state.filter_sql.trim(), fragment);
+                            }
+                            state.filter_builder_val.clear();
                         }
                     });
                 });
@@ -1352,6 +1512,8 @@ impl QueryPanel {
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);
                             }
+                            table.selected_rows = std::mem::take(&mut self.selected_rows);
+                            table.row_select_anchor = self.row_select_anchor;
 
                             // Restore sort indicator
                             if let Some(state) = &self.browse {
@@ -1380,6 +1542,8 @@ impl QueryPanel {
                                 self.edit_state = Some((r, c, table.edit_value.clone()));
                                 self.edit_needs_focus = false;
                             }
+                            self.selected_rows = std::mem::take(&mut table.selected_rows);
+                            self.row_select_anchor = table.row_select_anchor;
 
                             (out, table.sorted_indices)
                         }; // borrow of self.result released here
@@ -1419,6 +1583,7 @@ impl QueryPanel {
                                     let value = cell
                                         .map(|c| c.to_string())
                                         .unwrap_or_default();
+                                    let json_pretty = crate::ui::syntax::looks_like_json(&value);
                                     self.cell_popup = Some(CellPopup {
                                         col_name,
                                         value,
@@ -1426,6 +1591,7 @@ impl QueryPanel {
                                         display_row: row,
                                         col_idx: col,
                                         actual_row: sorted_indices[row],
+                                        json_pretty,
                                     });
                                 }
                             }
@@ -1484,6 +1650,35 @@ impl QueryPanel {
                                 let text = format_as_html(result, &self.display_indices);
                                 ui.ctx().copy_text(text);
                             }
+                        }
+
+                        // ── Handle bulk row actions (copy / export / delete) ──
+                        if output.bulk_copy_requested {
+                            if let Some(result) = &self.result {
+                                let indices: Vec<usize> = self.selected_rows.iter().copied().collect();
+                                ui.ctx().copy_text(format_as_tsv(result, &indices));
+                            }
+                        }
+                        if output.bulk_export_csv_requested || output.bulk_export_json_requested {
+                            let json = output.bulk_export_json_requested;
+                            if let Some(result) = &self.result {
+                                if let Some(path) = pick_save_path(if json { "json" } else { "csv" }) {
+                                    let columns = result.columns.clone();
+                                    let rows: Vec<Vec<CellValue>> = self
+                                        .selected_rows
+                                        .iter()
+                                        .filter_map(|&i| result.rows.get(i).cloned())
+                                        .collect();
+                                    let _ = db_tx.send(DbCommand::ExportRows { columns, rows, path, json });
+                                }
+                            }
+                        }
+                        if output.bulk_delete_requested {
+                            self.pending_bulk_delete =
+                                Some(self.selected_rows.iter().copied().collect());
+                        }
+                        if let Some(actual_idx) = output.duplicate_row_requested {
+                            self.duplicate_row(actual_idx, db_tx);
                         }
 
                         // Save sorted indices back for next frame (avoids per-frame reallocation).
@@ -1746,6 +1941,7 @@ impl QueryPanel {
         self.show_cell_popup(&ctx, i18n);
         self.show_col_stats_popup(&ctx, i18n);
         self.show_snippet_dialog(&ctx, snippets, i18n);
+        self.show_bulk_delete_confirm(&ctx, i18n, db_tx);
     }
 
     // ── Save query as snippet ─────────────────────────────────────────────────
@@ -1830,11 +2026,13 @@ impl QueryPanel {
     // ── Cell value popup ─────────────────────────────────────────────────────
 
     fn show_cell_popup(&mut self, ctx: &egui::Context, i18n: &I18n) {
-        let Some(popup) = self.cell_popup.take() else { return };
+        let Some(mut popup) = self.cell_popup.take() else { return };
 
         let mut open = true;
         let mut start_edit = false;
         let mut close_clicked = false;
+        let is_json = crate::ui::syntax::looks_like_json(&popup.value);
+        let mut json_pretty = popup.json_pretty;
 
         egui::Window::new(format!(" {} ", &popup.col_name))
             .collapsible(false)
@@ -1858,6 +2056,36 @@ impl QueryPanel {
                                 );
                             });
                             ui.add_space(8.0);
+                        } else if is_json && json_pretty {
+                            // Best-effort: reuse serde_json (already a dependency) to
+                            // pretty-print, then run the from-scratch tokenizer over
+                            // the result purely for color spans (no syntax crate).
+                            // A parse failure (truncated/malformed JSON) falls back
+                            // to the plain raw view below — today's behavior never breaks.
+                            match serde_json::from_str::<serde_json::Value>(&popup.value) {
+                                Ok(parsed) => {
+                                    let mut text = serde_json::to_string_pretty(&parsed)
+                                        .unwrap_or_else(|_| popup.value.clone());
+                                    let mut layouter = |ui: &egui::Ui, s: &str, wrap_width: f32| {
+                                        let job = crate::ui::syntax::highlight_json(ui, s, wrap_width);
+                                        ui.fonts(|f| f.layout_job(job))
+                                    };
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .desired_width(f32::INFINITY)
+                                            .font(egui::TextStyle::Monospace)
+                                            .layouter(&mut layouter),
+                                    );
+                                }
+                                Err(_) => {
+                                    let mut text = popup.value.clone();
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .desired_width(f32::INFINITY)
+                                            .font(egui::TextStyle::Monospace),
+                                    );
+                                }
+                            }
                         } else {
                             let mut text = popup.value.clone();
                             ui.add(
@@ -1869,12 +2097,21 @@ impl QueryPanel {
                     });
 
                 ui.separator();
-                ui.horizontal(|ui| {
+                // Wrapped (not a single fixed-width row) so a narrow/resized window
+                // wraps extra buttons to a new line instead of overlapping the
+                // right-anchored Close/char-count row below.
+                ui.horizontal_wrapped(|ui| {
                     if ui.button(i18n.btn_copy()).clicked() {
                         ctx.copy_text(popup.value.clone());
                     }
                     if ui.button(i18n.btn_edit()).clicked() {
                         start_edit = true;
+                    }
+                    if is_json {
+                        let label = if json_pretty { i18n.btn_json_raw() } else { i18n.btn_json_pretty() };
+                        if ui.button(label).clicked() {
+                            json_pretty = !json_pretty;
+                        }
                     }
                     // Copy as INSERT statement
                     if ui.button(i18n.btn_copy_as_insert()).on_hover_text(i18n.hover_copy_insert()).clicked() {
@@ -1910,6 +2147,10 @@ impl QueryPanel {
                             }
                         }
                     }
+                });
+                // Own row — kept separate from the (wrapping) action-button row above
+                // so it can never overlap those buttons regardless of window width.
+                ui.horizontal(|ui| {
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
@@ -1935,6 +2176,7 @@ impl QueryPanel {
             self.edit_state = Some((popup.display_row, popup.col_idx, initial));
             self.edit_needs_focus = true;
         } else if open && !close_clicked {
+            popup.json_pretty = json_pretty;
             self.cell_popup = Some(popup);
         }
     }
@@ -2096,7 +2338,7 @@ impl QueryPanel {
             .filter_map(|pk| {
                 let idx = col_names.iter().position(|c| c == pk)?;
                 let val = row_data.get(idx)?.to_string();
-                Some(format!("\"{}\" = '{}'", pk, val.replace('\'', "''")))
+                Some(format!("\"{}\" = '{}'", pk, sql_quote(&val)))
             })
             .collect();
 
@@ -2116,7 +2358,7 @@ impl QueryPanel {
         let set_expr = if new_val.eq_ignore_ascii_case("null") {
             format!("\"{}\" = NULL", col_name)
         } else {
-            format!("\"{}\" = '{}'", col_name, new_val.replace('\'', "''"))
+            format!("\"{}\" = '{}'", col_name, sql_quote(&new_val))
         };
 
         let sql = format!(
@@ -2127,6 +2369,158 @@ impl QueryPanel {
         self.set_running();
         let _ = db_tx.send(DbCommand::Execute(sql));
     }
+
+    /// Build and execute an INSERT that duplicates one row, omitting primary-key
+    /// columns (if known) so the DB can auto-generate a new one for serial/identity
+    /// PKs. Reuses the same `pk_cols` cache as `commit_cell_edit`.
+    fn duplicate_row(&mut self, actual_idx: usize, db_tx: &Sender<DbCommand>) {
+        let (schema, table) = match &self.browse {
+            Some(b) => (b.schema.clone(), b.table.clone()),
+            None => {
+                let i18n = I18n::new(self.lang);
+                self.push_log(LogEntry::warning(i18n.warn_edit_requires_browse()));
+                self.active_tab = PanelTab::Messages;
+                return;
+            }
+        };
+
+        let pk_cols = self
+            .pk_cols
+            .get(&(schema.clone(), table.clone()))
+            .cloned()
+            .unwrap_or_default();
+
+        let (col_names, row_data) = match &self.result {
+            Some(r) => (
+                r.columns.clone(),
+                r.rows.get(actual_idx).cloned().unwrap_or_default(),
+            ),
+            None => return,
+        };
+
+        let mut cols: Vec<String> = Vec::new();
+        let mut vals: Vec<String> = Vec::new();
+        for (name, val) in col_names.iter().zip(row_data.iter()) {
+            if pk_cols.contains(name) {
+                continue; // let the DB auto-generate serial/identity PKs
+            }
+            cols.push(format!("\"{name}\""));
+            vals.push(if val.is_null() {
+                "NULL".to_string()
+            } else {
+                format!("'{}'", sql_quote(&val.to_string()))
+            });
+        }
+
+        if cols.is_empty() {
+            return;
+        }
+
+        let sql = format!(
+            "INSERT INTO \"{schema}\".\"{table}\" ({}) VALUES ({});",
+            cols.join(", "),
+            vals.join(", ")
+        );
+
+        self.set_running();
+        let _ = db_tx.send(DbCommand::Execute(sql));
+    }
+
+    /// Build and execute a bulk DELETE for the given actual row indices, using the
+    /// same PK-based WHERE construction as `commit_cell_edit`.
+    fn execute_bulk_delete(&mut self, indices: &[usize], db_tx: &Sender<DbCommand>) {
+        let (schema, table) = match &self.browse {
+            Some(b) => (b.schema.clone(), b.table.clone()),
+            None => {
+                let i18n = I18n::new(self.lang);
+                self.push_log(LogEntry::warning(i18n.warn_edit_requires_browse()));
+                self.active_tab = PanelTab::Messages;
+                return;
+            }
+        };
+
+        let pk_cols = self
+            .pk_cols
+            .get(&(schema.clone(), table.clone()))
+            .cloned()
+            .unwrap_or_default();
+
+        if pk_cols.is_empty() {
+            let i18n = I18n::new(self.lang);
+            self.push_log(LogEntry::warning(i18n.warn_no_pk(&schema, &table)));
+            self.active_tab = PanelTab::Messages;
+            return;
+        }
+
+        let col_names = match &self.result {
+            Some(r) => r.columns.clone(),
+            None => return,
+        };
+
+        let mut row_clauses: Vec<String> = Vec::new();
+        for &idx in indices {
+            let row_data = match self.result.as_ref().and_then(|r| r.rows.get(idx)) {
+                Some(r) => r,
+                None => continue,
+            };
+            let parts: Vec<String> = pk_cols
+                .iter()
+                .filter_map(|pk| {
+                    let i = col_names.iter().position(|c| c == pk)?;
+                    let val = row_data.get(i)?.to_string();
+                    Some(format!("\"{}\" = '{}'", pk, sql_quote(&val)))
+                })
+                .collect();
+            if parts.len() == pk_cols.len() {
+                row_clauses.push(format!("({})", parts.join(" AND ")));
+            }
+        }
+
+        if row_clauses.is_empty() {
+            return;
+        }
+
+        let sql = format!(
+            "DELETE FROM \"{schema}\".\"{table}\" WHERE {};",
+            row_clauses.join(" OR ")
+        );
+
+        self.set_running();
+        let _ = db_tx.send(DbCommand::Execute(sql));
+    }
+
+    /// Confirmation modal shown before a bulk DELETE actually runs.
+    fn show_bulk_delete_confirm(&mut self, ctx: &egui::Context, i18n: &I18n, db_tx: &Sender<DbCommand>) {
+        let Some(indices) = self.pending_bulk_delete.clone() else { return };
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new(i18n.confirm_bulk_delete_title())
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(i18n.confirm_bulk_delete_body(indices.len()));
+                ui.horizontal(|ui| {
+                    if ui.button(i18n.btn_confirm_delete()).clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button(i18n.btn_cancel()).clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if confirmed {
+            self.pending_bulk_delete = None;
+            self.selected_rows.clear();
+            self.execute_bulk_delete(&indices, db_tx);
+        } else if cancelled {
+            self.pending_bulk_delete = None;
+        }
+    }
+}
+
+/// Escape a value for embedding inside a single-quoted SQL string literal.
+fn sql_quote(s: &str) -> String {
+    s.replace('\'', "''")
 }
 
 /// Native save-file dialog via `rfd`. Falls back to home dir if dialog is cancelled.
@@ -2195,6 +2589,21 @@ fn format_as_html(result: &crate::db::QueryResult, indices: &[usize]) -> String 
     )
 }
 
+/// Tab-separated plain text — pastes cleanly into spreadsheets. Used for "Copy Selected Rows".
+fn format_as_tsv(result: &crate::db::QueryResult, indices: &[usize]) -> String {
+    let mut out = result.columns.join("\t");
+    out.push('\n');
+    for &i in indices {
+        let row = result.rows[i].iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\t");
+        out.push_str(&row);
+        out.push('\n');
+    }
+    out
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -2203,4 +2612,68 @@ fn html_escape(s: &str) -> String {
 }
 
 // ── SQL formatter ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sql_quote_escapes_single_quotes() {
+        assert_eq!(sql_quote("O'Brien"), "O''Brien");
+        assert_eq!(sql_quote("no quotes here"), "no quotes here");
+        assert_eq!(sql_quote("''"), "''''");
+    }
+
+    #[test]
+    fn filter_op_eq_quotes_non_numeric_values() {
+        assert_eq!(FilterOp::Eq.to_sql("name", "alpha"), "\"name\" = 'alpha'");
+    }
+
+    #[test]
+    fn filter_op_eq_leaves_numeric_values_unquoted() {
+        assert_eq!(FilterOp::Eq.to_sql("count", "42"), "\"count\" = 42");
+        assert_eq!(FilterOp::Gt.to_sql("count", "3.5"), "\"count\" > 3.5");
+    }
+
+    #[test]
+    fn filter_op_is_null_ignores_value() {
+        assert_eq!(FilterOp::IsNull.to_sql("payload", ""), "\"payload\" IS NULL");
+        assert_eq!(FilterOp::IsNotNull.to_sql("payload", "ignored"), "\"payload\" IS NOT NULL");
+    }
+
+    #[test]
+    fn filter_op_in_quotes_each_item() {
+        assert_eq!(
+            FilterOp::In.to_sql("name", "alpha,beta,3"),
+            "\"name\" IN ('alpha', 'beta', 3)"
+        );
+    }
+
+    #[test]
+    fn filter_op_like_quotes_pattern() {
+        assert_eq!(FilterOp::Like.to_sql("name", "%foo%"), "\"name\" LIKE '%foo%'");
+    }
+
+    #[test]
+    fn filter_op_needs_value_excludes_null_checks() {
+        assert!(FilterOp::Eq.needs_value());
+        assert!(!FilterOp::IsNull.needs_value());
+        assert!(!FilterOp::IsNotNull.needs_value());
+    }
+
+    #[test]
+    fn format_as_tsv_joins_columns_and_rows() {
+        let result = crate::db::QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("alpha".into())],
+                vec![CellValue::Integer(2), CellValue::Text("beta".into())],
+            ],
+            rows_affected: None,
+            elapsed_ms: 0.0,
+        };
+        let tsv = format_as_tsv(&result, &[0, 1]);
+        assert_eq!(tsv, "id\tname\n1\talpha\n2\tbeta\n");
+    }
+}
 

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use egui_extras::{Column, TableBuilder};
 
 use crate::db::query::{CellValue, QueryResult};
@@ -27,6 +29,16 @@ pub struct TableOutput {
     pub copy_as_markdown: bool,
     /// Right-click "Copy table as HTML" on any cell
     pub copy_as_html: bool,
+    /// Right-click "Copy Selected Rows" (>1 rows selected)
+    pub bulk_copy_requested: bool,
+    /// Right-click "Export Selected as CSV" (>1 rows selected)
+    pub bulk_export_csv_requested: bool,
+    /// Right-click "Export Selected as JSON" (>1 rows selected)
+    pub bulk_export_json_requested: bool,
+    /// Right-click "Delete Selected Rows" (>1 rows selected)
+    pub bulk_delete_requested: bool,
+    /// Right-click "Duplicate Row" → actual row index
+    pub duplicate_row_requested: Option<usize>,
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -35,6 +47,11 @@ pub struct ResultTable<'a> {
     result: &'a QueryResult,
     pub selected_row: Option<usize>,
     pub selected_cell: Option<(usize, usize)>,
+    /// Multi-row selection (actual row indices, i.e. index into `result.rows`).
+    /// Persisted by the caller across frames exactly like `edit_row`/`edit_col`.
+    pub selected_rows: BTreeSet<usize>,
+    /// Anchor (display index) for Shift+Click range selection.
+    pub row_select_anchor: Option<usize>,
     pub sort_col: Option<usize>,
     pub sort_asc: bool,
     pub sorted_indices: Vec<usize>,
@@ -62,6 +79,8 @@ impl<'a> ResultTable<'a> {
             result,
             selected_row: None,
             selected_cell: None,
+            selected_rows: BTreeSet::new(),
+            row_select_anchor: None,
             sort_col: None,
             sort_asc: true,
             sorted_indices,
@@ -132,6 +151,9 @@ impl<'a> ResultTable<'a> {
         let null_color = self.null_color;
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
+        // Take the row-selection state out so the closures can mutate it freely.
+        let mut selected_rows = std::mem::take(&mut self.selected_rows);
+        let mut row_select_anchor = self.row_select_anchor;
 
         let mut sort_changed: Option<(usize, bool)> = None;
         let mut cell_double_clicked: Option<(usize, usize)> = None;
@@ -142,6 +164,11 @@ impl<'a> ResultTable<'a> {
         let mut full_value_requested: Option<(usize, usize)> = None;
         let mut copy_as_markdown = false;
         let mut copy_as_html = false;
+        let mut bulk_copy_requested = false;
+        let mut bulk_export_csv_requested = false;
+        let mut bulk_export_json_requested = false;
+        let mut bulk_delete_requested = false;
+        let mut duplicate_row_requested: Option<usize> = None;
 
         builder
             .header(24.0, |mut header| {
@@ -176,7 +203,9 @@ impl<'a> ResultTable<'a> {
                     let actual_idx = display_indices[display_idx]; // caller-managed, no per-frame alloc
                     let row_data = &self.result.rows[actual_idx];
 
-                    row.set_selected(selected_row == Some(display_idx));
+                    row.set_selected(
+                        selected_row == Some(display_idx) || selected_rows.contains(&actual_idx),
+                    );
 
                     for (col_idx, cell) in row_data.iter().enumerate() {
                         let is_editing =
@@ -232,8 +261,57 @@ impl<'a> ResultTable<'a> {
                                     cell_double_clicked = Some((display_idx, col_idx));
                                 } else if cell_resp.clicked() {
                                     cell_clicked = Some((actual_idx, col_idx));
+                                    let mods = ui.input(|i| i.modifiers);
+                                    if mods.shift {
+                                        let anchor = row_select_anchor.unwrap_or(display_idx);
+                                        let (lo, hi) = if anchor <= display_idx {
+                                            (anchor, display_idx)
+                                        } else {
+                                            (display_idx, anchor)
+                                        };
+                                        for d in lo..=hi {
+                                            if let Some(&a) = display_indices.get(d) {
+                                                selected_rows.insert(a);
+                                            }
+                                        }
+                                    } else if mods.command {
+                                        if !selected_rows.remove(&actual_idx) {
+                                            selected_rows.insert(actual_idx);
+                                        }
+                                        row_select_anchor = Some(display_idx);
+                                    } else {
+                                        selected_rows.clear();
+                                        selected_rows.insert(actual_idx);
+                                        row_select_anchor = Some(display_idx);
+                                    }
                                 }
+                                let n_selected = selected_rows.len();
                                 cell_resp.context_menu(|ui| {
+                                    if n_selected > 1 {
+                                        ui.label(i18n.bulk_selected_count(n_selected));
+                                        if ui.button(i18n.btn_bulk_copy()).clicked() {
+                                            bulk_copy_requested = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.btn_bulk_export_csv()).clicked() {
+                                            bulk_export_csv_requested = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.btn_bulk_export_json()).clicked() {
+                                            bulk_export_json_requested = true;
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.btn_bulk_delete()).clicked() {
+                                            bulk_delete_requested = true;
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                    }
+                                    if ui.button(i18n.btn_duplicate_row()).clicked() {
+                                        duplicate_row_requested = Some(actual_idx);
+                                        ui.close_menu();
+                                    }
+                                    ui.separator();
                                     if ui.button(i18n.cell_view_full()).clicked() {
                                         full_value_requested = Some((display_idx, col_idx));
                                         ui.close_menu();
@@ -260,6 +338,8 @@ impl<'a> ResultTable<'a> {
 
         // ── Write back mutable state ──────────────────────────────────────────
         self.edit_value = edit_val;
+        self.selected_rows = selected_rows;
+        self.row_select_anchor = row_select_anchor;
         if edit_needs_focus {
             self.edit_needs_focus = false;
         }
@@ -308,6 +388,11 @@ impl<'a> ResultTable<'a> {
             full_value_requested,
             copy_as_markdown,
             copy_as_html,
+            bulk_copy_requested,
+            bulk_export_csv_requested,
+            bulk_export_json_requested,
+            bulk_delete_requested,
+            duplicate_row_requested,
         }
     }
 
@@ -337,6 +422,11 @@ fn render_cell(ui: &mut egui::Ui, cell: &CellValue, null_color: egui::Color32) {
         }
         CellValue::Boolean(false) => {
             ui.label(egui::RichText::new("false").color(egui::Color32::RED));
+        }
+        CellValue::Text(s) if crate::ui::syntax::looks_like_json(s) => {
+            // Just a visual hint here — full pretty-print happens in the "View
+            // Full Value" popup (double-click), not in the narrow grid cell.
+            ui.add(egui::Label::new(egui::RichText::new(s.as_ref()).monospace()).truncate());
         }
         other => {
             ui.add(egui::Label::new(other.to_string()).truncate());

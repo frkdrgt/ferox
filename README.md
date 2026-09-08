@@ -15,7 +15,7 @@
 [![Build](https://img.shields.io/github/actions/workflow/status/frkdrgt/ferox/release.yml?style=flat-square&logo=github)](https://github.com/frkdrgt/ferox/actions)
 [![Release](https://img.shields.io/github/v/release/frkdrgt/ferox?style=flat-square&color=orange)](https://github.com/frkdrgt/ferox/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88+-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
 </div>
 
@@ -76,7 +76,11 @@ The generated SQL is placed directly in the active query editor — review it, t
 - **Per-table tabs** — clicking a table opens it in its own tab; existing tabs are reused
 - **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables, live filter
 - **Data browser** — double-click any table or view to browse with server-side pagination & ORDER BY
+- **Structured filter builder** — pick a column/operator/value (`=, !=, >, <, LIKE, ILIKE, IS NULL, IN`, …) in browse mode, or type a raw `WHERE` fragment directly
+- **Multi-row selection & bulk actions** — Shift/Ctrl+Click to select rows, then bulk **copy / export as CSV or JSON / delete** (confirmation dialog, PK-based)
+- **Duplicate Row** — right-click a row to INSERT a copy, auto-omitting primary-key columns
 - **Inline editing** — double-click a cell to edit, Enter to commit, Escape to cancel
+- **JSON/JSONB pretty-print** — the cell value popup detects JSON, pretty-prints and syntax-highlights it, with a Pretty/Raw toggle
 - **Persistent query history** — last 500 queries, searchable, click to reload
 
 ### Query Tools
@@ -85,6 +89,7 @@ The generated SQL is placed directly in the active query editor — review it, t
 - **EXPLAIN visualizer** — tree view of query plans with cost, rows, and timing per node; optimization suggestions
 - **Safe mode transactions** — DML wrapped in explicit BEGIN/COMMIT/ROLLBACK
 - **Export** — CSV & JSON via native OS file dialog (no temp files)
+- **CSV import** — right-click a table → Import CSV…; columns are read from the file's header and streamed in via `COPY FROM STDIN`
 - **Script generation** — right-click table → Generate SELECT / INSERT / UPDATE / DELETE scripts
 - **Join Builder** — visual multi-table JOIN composer (`Query → Join Builder…`)
 - **Column statistics** — right-click any column header → null %, distinct count, min/max length, top values
@@ -92,7 +97,9 @@ The generated SQL is placed directly in the active query editor — review it, t
 ### Developer Experience
 - **SQL syntax highlighting** — zero-dependency tokenizer, dark (`base16-ocean.dark`) and light (`InspiredGitHub`) themes
 - **SQL autocomplete** — table names, column names, keywords
-- **Connection profiles** — saved to `~/.config/ferox/config.toml`; SSL modes + SSH tunnel supported
+- **Connection profiles** — saved to `config.toml` (see [Configuration](#configuration)); SSL modes + SSH tunnel supported
+- **Credentials in the OS keychain** — connection/SSH passwords and the AI API key are stored via Windows Credential Manager / macOS Keychain / Linux Secret Service, not as plain text
+- **Connection color tags** — flag a connection red/yellow/green/blue (e.g. "Production") so it stands out on the tab bar and connection switcher
 - **Multiple simultaneous connections** — per-connection sidebar, tabs, and DB threads
 - **ER diagram** — visual schema relationship viewer with FK arrows, pan/zoom, draggable nodes
 - **Database dashboard** — table sizes, index stats, active connections with kill support
@@ -107,9 +114,12 @@ The generated SQL is placed directly in the active query editor — review it, t
 |--------|-------|
 | RAM at idle | **~45 MB** |
 | Cold startup | **< 200 ms** |
-| Binary size | **~7 MB** |
+| Binary size | **~9.9 MB** |
 
-*Measured on Windows 10, release build with LTO.*
+*Measured on Windows 10, release build with LTO. Binary size grew from ~7 MB after
+adding OS-keychain-backed credential storage (`keyring` crate) — its Windows backend
+pulls in a full regex engine. RAM/startup are unaffected (keychain I/O only happens
+on connect/save, never per-frame).*
 
 ---
 
@@ -119,26 +129,34 @@ The generated SQL is placed directly in the active query editor — review it, t
 
 Download the latest release for your platform from the [Releases page](https://github.com/frkdrgt/ferox/releases).
 
-| Platform | File |
-|----------|------|
-| Windows 10+ | `ferox-windows-x86_64.exe` |
-| macOS 12+ (Intel + Apple Silicon) | `ferox-macos-universal` |
-| Linux x86\_64 | `ferox-linux-x86_64` |
+| Platform | File | Format |
+|----------|------|--------|
+| Windows 10+ | `ferox-windows-x64.exe` | standalone `.exe` |
+| macOS 12+ (Intel + Apple Silicon) | `ferox-macos-universal.dmg` | disk image containing `Ferox.app` |
+| Linux x86\_64 | `ferox-linux-x64.tar.gz` | tarball containing the `ferox` binary |
 
 ### macOS — first launch
 
-macOS may block the binary with a "unidentified developer" warning because Ferox is not notarized. To allow it:
+Open the `.dmg` and drag `Ferox.app` to Applications (or run it straight from the mounted volume). macOS may still block it with an "unidentified developer" warning because Ferox is not notarized — if so, clear the quarantine flag:
 
 ```bash
-xattr -rd com.apple.quarantine /path/to/ferox-macos-universal
+xattr -rd com.apple.quarantine /Applications/Ferox.app
 ```
 
-Then double-click (or `chmod +x` and run from terminal).
+Then double-click to launch.
+
+### Linux — first launch
+
+```bash
+tar -xzf ferox-linux-x64.tar.gz
+chmod +x ferox
+./ferox
+```
 
 ### Build from source
 
 ```bash
-# Prerequisites: Rust 1.75+ (https://rustup.rs)
+# Prerequisites: Rust 1.88+ (https://rustup.rs)
 git clone https://github.com/frkdrgt/ferox.git
 cd ferox
 cargo build --release
@@ -185,28 +203,36 @@ Or use the **Join Builder** (`Query → Join Builder…`) to construct joins vis
 
 ## Configuration
 
-Profiles are stored automatically:
+Profiles are stored automatically (config file directory is still named `pgclient` — a holdover from before the `ferox` rebrand):
 
-| Platform | Path |
-|----------|------|
-| Windows | `%APPDATA%\ferox\config.toml` |
-| macOS / Linux | `~/.config/ferox/config.toml` |
+| Platform | Config file | Query history |
+|----------|------|----------------|
+| Windows | `%APPDATA%\pgclient\config.toml` | `%LOCALAPPDATA%\pgclient\history.txt` |
+| macOS | `~/Library/Application Support/pgclient/config.toml` | `~/Library/Application Support/pgclient/history.txt` |
+| Linux | `~/.config/pgclient/config.toml` | `~/.local/share/pgclient/history.txt` |
 
 ```toml
+language = "en"          # "en" or "tr"
+null_color = [128, 100, 100]
+
 [[connections]]
 name     = "prod-readonly"
 host     = "db.example.com"
 port     = 5432
 user     = "analyst"
-password = ""        # leave empty to prompt
 database = "warehouse"
 ssl      = "require"
-
-[language]          # "en" or "tr"
-language = "en"
+color    = [200, 60, 60] # optional danger tag: red/yellow/green/blue, or omit
 ```
 
-Query history lives at `~/.local/share/ferox/history.txt` (max 500 entries).
+**Passwords aren't in this file if a keychain entry exists.** On first successful
+save, ferox moves the connection password (and SSH tunnel password, and AI API key)
+into Windows Credential Manager / macOS Keychain / Linux Secret Service, and clears
+the plain-text field here. If no keychain backend is available, the password stays
+in this file as a plain-text fallback — nothing breaks, you just don't get the
+extra protection.
+
+History keeps the last 500 entries.
 
 ---
 
@@ -249,6 +275,7 @@ All communication goes through `mpsc` channels — the UI thread never blocks.
 | SQL highlighting | custom zero-dependency tokenizer (`src/ui/syntax.rs`) |
 | Config | `serde` + `toml` |
 | File dialogs | [`rfd`](https://github.com/PolyMeilex/rfd) |
+| OS keychain | [`keyring`](https://github.com/open-source-cooperative/keyring-rs) |
 
 ---
 
@@ -269,11 +296,15 @@ All communication goes through `mpsc` channels — the UI thread never blocks.
 - [x] **Close connection** — disconnect and remove a connection from the sidebar with one click
 - [x] **Connection status indicators** — color-coded dots replacing broken emoji squares on Windows
 - [x] **AI: Natural Language → SQL** — multi-provider (Claude, Groq, Ollama, OpenAI, custom), live schema context
-- [ ] **Ctrl+A** select-all in query editor
-- [ ] **Bookmarked queries** — save & name frequently used SQL
+- [x] **Ctrl+A** select-all in query editor
+- [x] **Bookmarked queries** — saved queries/snippets, Ctrl+Shift+S, searchable panel
+- [x] **Structured filter builder** — column/operator/value picker for browse-mode `WHERE` filters
+- [x] **Multi-row selection & bulk actions** — bulk copy / export / delete, plus Duplicate Row
+- [x] **CSV import** — via a file picker (`Import CSV…`), not drag-and-drop
+- [x] **Connection color tags** — per-connection danger color, shown on tabs and the connection switcher
+- [x] **Credentials in the OS keychain** — passwords and API keys no longer stored as plain text
 - [ ] **Dark / light theme toggle** — runtime switch
 - [ ] **Result diff** — compare two query results side-by-side
-- [ ] **CSV / JSON import** — drag-and-drop data into a table
 
 ---
 
@@ -288,8 +319,14 @@ docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=test postgres:16
 # Dev build (faster compile, debug symbols)
 cargo build
 
-# Integration tests (requires Postgres on localhost:5432)
-cargo test --test integration
+# Unit tests — pure logic (SQL builders, tokenizers, quoting), no DB required
+cargo test
+
+# Integration tests — require a reachable local Postgres and (for the keychain
+# test) an OS keychain backend; not run by default. Point them at your instance
+# with FEROX_TEST_PG_HOST/PORT/USER/PASSWORD/DATABASE (default: postgres/postgres
+# @localhost:5432/postgres) if it differs.
+cargo test -- --ignored
 ```
 
 Please keep the UI thread non-blocking and all DB work behind `DbCommand` / `DbEvent`.

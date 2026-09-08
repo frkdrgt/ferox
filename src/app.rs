@@ -36,6 +36,10 @@ pub struct ConnState {
     /// Script kind pending for (schema, table) — set when GenerateScript fires
     /// before columns are loaded; fulfilled when TableDetails arrives.
     pub pending_script: Option<(String, String, ScriptKind)>,
+    /// Danger-tag color resolved from the connection profile (`ConnectionProfile::resolved_color`)
+    /// at connect time — shown as a small accent on tabs and the connection switcher so
+    /// destructive SQL isn't run against the wrong environment by mistake.
+    pub danger_color: Color32,
 }
 
 // ── App ────────────────────────────────────────────────────────────────────────
@@ -53,6 +57,7 @@ pub struct PgClientApp {
     // Dialogs
     pub table_dialog: TableDialog,
     pub join_builder: JoinBuilder,
+    pub import_dialog: crate::ui::import_dialog::ImportCsvDialog,
 
     // App state
     pub config: AppConfig,
@@ -140,6 +145,7 @@ impl PgClientApp {
             tab_manager: TabManager::default(),
             connection_dialog: ConnectionDialog::default(),
             table_dialog: TableDialog::default(),
+            import_dialog: crate::ui::import_dialog::ImportCsvDialog::default(),
             join_builder: JoinBuilder::default(),
             config,
             history,
@@ -172,6 +178,10 @@ impl PgClientApp {
             let _ = cmd_tx.send(DbCommand::Connect(profile.clone()));
 
             let name = format!("{}@{}", profile.database, profile.host);
+            let danger_color = profile
+                .resolved_color()
+                .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+                .unwrap_or(Color32::TRANSPARENT);
             self.connections.push(ConnState {
                 id: conn_id,
                 name,
@@ -183,6 +193,7 @@ impl PgClientApp {
                 pending_edit_table: None,
                 in_transaction: false,
                 pending_script: None,
+                danger_color,
             });
             self.active_conn = self.connections.len() - 1;
 
@@ -206,6 +217,10 @@ impl PgClientApp {
         let _ = cmd_tx.send(DbCommand::Connect(profile.clone()));
 
         let name = format!("{}@{}", profile.database, profile.host);
+        let danger_color = profile
+            .resolved_color()
+            .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+            .unwrap_or(Color32::TRANSPARENT);
         self.connections.push(ConnState {
             id: conn_id,
             name,
@@ -217,6 +232,7 @@ impl PgClientApp {
             pending_edit_table: None,
             in_transaction: false,
             pending_script: None,
+            danger_color,
         });
         self.active_conn = self.connections.len() - 1;
 
@@ -346,6 +362,15 @@ impl PgClientApp {
                     DbEvent::ExportDone(path) => {
                         self.tab_manager.set_export_done(path);
                     }
+                    DbEvent::ImportDone(rows) => {
+                        self.import_dialog.open = false;
+                        self.import_dialog.running = false;
+                        self.tab_manager.set_import_done(rows);
+                    }
+                    DbEvent::ImportError(msg) => {
+                        self.import_dialog.running = false;
+                        self.tab_manager.set_error_for(conn_id, msg);
+                    }
                     DbEvent::KillDone(_pid) => {
                         // Auto-reload dashboard after kill
                         self.tab_manager.set_dashboard_loading();
@@ -468,6 +493,8 @@ impl PgClientApp {
                         for (i, profile) in profiles.iter().enumerate() {
                             if profile.group.as_deref() == group.as_deref() {
                                 ui.horizontal(|ui| {
+                                    let [r, g, b] = profile.resolved_color().unwrap_or([86, 156, 214]);
+                                    ui.colored_label(Color32::from_rgb(r, g, b), "●");
                                     if ui.button(&profile.name).clicked() {
                                         self.connect_to_profile(i);
                                         ui.close_menu();
@@ -482,7 +509,11 @@ impl PgClientApp {
                     }
 
                     if let Some(idx) = to_delete {
-                        self.config.connections.remove(idx);
+                        let removed = self.config.connections.remove(idx);
+                        crate::secrets::delete_secret(&crate::secrets::db_account(&removed));
+                        if let Some(ssh) = &removed.ssh_tunnel {
+                            crate::secrets::delete_secret(&crate::secrets::ssh_account(ssh));
+                        }
                         let _ = self.config.save();
                     }
                 }
@@ -573,8 +604,27 @@ impl PgClientApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(i18n.lbl_null_color());
-                    if ui.color_edit_button_srgb(&mut self.config.null_color).changed() {
-                        let _ = self.config.save();
+                    // Fixed swatches, not `color_edit_button_srgb` — that widget opens
+                    // its own popup Area, and nesting it inside this menu_button closes
+                    // the entire Settings menu the moment it's touched (egui nested-
+                    // popup-in-menu quirk). Plain buttons have no nested popup.
+                    for [r, g, b] in crate::config::NULL_COLOR_PALETTE {
+                        let color = Color32::from_rgb(r, g, b);
+                        let is_selected = self.config.null_color == [r, g, b];
+                        let btn = ui.add(
+                            egui::Button::new("")
+                                .fill(color)
+                                .min_size(egui::Vec2::splat(16.0))
+                                .stroke(if is_selected {
+                                    egui::Stroke::new(2.0, Color32::WHITE)
+                                } else {
+                                    egui::Stroke::NONE
+                                }),
+                        );
+                        if btn.clicked() {
+                            self.config.null_color = [r, g, b];
+                            let _ = self.config.save();
+                        }
                     }
                 });
                 ui.separator();
@@ -798,7 +848,7 @@ impl PgClientApp {
         let i18n = self.i18n;
 
         // Collect display data to avoid borrow issues
-        let data: Vec<(usize, String, Color32, bool)> = self
+        let data: Vec<(usize, String, Color32, Color32, bool)> = self
             .connections
             .iter()
             .enumerate()
@@ -809,7 +859,7 @@ impl PgClientApp {
                     ConnectionStatus::Error(_) => Color32::from_rgb(200, 60, 60),
                     ConnectionStatus::Disconnected => Color32::from_gray(120),
                 };
-                (i, c.name.clone(), dot_color, i == self.active_conn)
+                (i, c.name.clone(), dot_color, c.danger_color, i == self.active_conn)
             })
             .collect();
 
@@ -820,9 +870,20 @@ impl PgClientApp {
         egui::Frame::none()
             .inner_margin(egui::Margin { left: 4.0, right: 4.0, top: 4.0, bottom: 2.0 })
             .show(ui, |ui| {
-                for (i, name, dot_color, is_active) in &data {
+                for (i, name, dot_color, danger_color, is_active) in &data {
                     ui.horizontal(|ui| {
-                        ui.add_space(2.0);
+                        // Thin danger-tag bar on the left edge, distinct from the
+                        // connection-status dot below. Skipped entirely for untagged
+                        // connections so the common case stays unadorned.
+                        if *danger_color != Color32::TRANSPARENT {
+                            let bar_rect = ui.available_rect_before_wrap();
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(bar_rect.min, egui::vec2(3.0, bar_rect.height())),
+                                0.0,
+                                *danger_color,
+                            );
+                        }
+                        ui.add_space(5.0);
                         ui.colored_label(*dot_color, "●");
                         // Truncate long names for display; show full name on hover.
                         let display_name = if name.len() > 34 {
@@ -1146,6 +1207,15 @@ impl eframe::App for PgClientApp {
                             }
                             self.tab_manager.mark_er_load_requested();
                         }
+                        SidebarAction::ImportCsv { schema, table } => {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CSV files", &["csv"])
+                                .pick_file()
+                                .map(|p| p.to_string_lossy().into_owned())
+                            {
+                                self.import_dialog.open_for(schema, table, path);
+                            }
+                        }
                         SidebarAction::EditTable { schema, table } => {
                             let cached = self
                                 .connections
@@ -1177,11 +1247,11 @@ impl eframe::App for PgClientApp {
 
         // Central panel — query editor + results (with tab bar)
         egui::CentralPanel::default().show(ctx, |ui| {
-            // Build the list of (conn_id, name, &db_tx) for tab_manager.show()
-            let conn_refs: Vec<(usize, &str, &Sender<DbCommand>)> = self
+            // Build the list of (conn_id, name, &db_tx, danger_color) for tab_manager.show()
+            let conn_refs: Vec<(usize, &str, &Sender<DbCommand>, Color32)> = self
                 .connections
                 .iter()
-                .map(|c| (c.id, c.name.as_str(), &c.db_tx))
+                .map(|c| (c.id, c.name.as_str(), &c.db_tx, c.danger_color))
                 .collect();
             let ai_enabled = self.config.ai.is_configured();
             let [r, g, b] = self.config.null_color;
@@ -1254,6 +1324,15 @@ impl eframe::App for PgClientApp {
                         let _ = conn.db_tx.send(DbCommand::ExecuteDdl(sql));
                     }
                 }
+            }
+        }
+
+        // CSV import confirmation dialog
+        if let Some(crate::ui::import_dialog::ImportCsvAction::Run { schema, table, path, columns }) =
+            self.import_dialog.show(ctx, &i18n)
+        {
+            if let Some(conn) = self.connections.get(self.active_conn) {
+                let _ = conn.db_tx.send(DbCommand::ImportCsv { schema, table, path, columns });
             }
         }
 

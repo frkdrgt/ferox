@@ -8,6 +8,17 @@
 
 ## Tamamlanan
 
+### Faz 14 — Toplu İşlemler, Filtre Builder, Şifre Şifreleme, JSON, CSV Import ✓
+- [x] Çoklu satır seçimi (Shift+Click aralık, Ctrl+Click toggle) — sonuç grid'inde
+- [x] Toplu işlemler: seçili satırları kopyala / CSV-JSON export / DELETE (PK tabanlı, onay diyaloglu)
+- [x] Operatör tabanlı WHERE filtre builder (`=, !=, >, <, >=, <=, LIKE, ILIKE, IS NULL, IS NOT NULL, IN`) — mevcut ham SQL filtre kutusunun üstüne, execution path'i değiştirmeden
+- [x] Duplicate Row — seçili satırı INSERT olarak çalıştırır, PK kolonlarını (varsa) otomatik atlar
+- [x] Bağlantı danger-color etiketi (Production/Staging vb.) — connection dialog'da 5'li sabit palet, tab bar'da ve connection switcher'da gösteriliyor; eski `group`-adı heuristiği fallback olarak korunuyor
+- [x] DB/SSH şifreleri ve AI API key artık düz metin değil — `keyring` crate ile OS keychain'e (Windows Credential Manager / macOS Keychain / Linux Secret Service) taşınıyor, `config.toml`'a sadece keychain yazımı başarısız olursa fallback olarak yazılıyor
+- [x] JSON/JSONB pretty-print — "View Full Value" popup'ında `serde_json` ile biçimlendirme + sıfırdan yazılmış JSON tokenizer (syntax.rs) ile renklendirme, Pretty/Raw toggle
+- [x] CSV import — `COPY ... FROM STDIN`, kolon isimleri CSV header'ından otomatik alınır, dosya 64KB parçalar hâlinde akıtılır (execute_query/simple_query kuralının tek, dokümante edilmiş istisnası)
+- [x] Binary boyutu 6.9MB → 9.86MB (+%43, `keyring`'in Windows backend'i `regex` motoru getiriyor) — bilinçli kabul edildi, bkz. CLAUDE.md
+
 ### Faz 13 — Küçük UX Tamamlamaları ✓
 - [x] Sorgu editöründe Ctrl+A ile tümünü seç
 - [x] NULL değerlere özel renk tercihi Settings menüsünden config'e kaydediliyor (`AppConfig.null_color`)

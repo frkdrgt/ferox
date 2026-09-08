@@ -1,18 +1,5 @@
 # ferox — Gelecek Özellik Fikirleri
 
-## 🔥 Yüksek Öncelik
-
-### Çoklu satır seçimi & toplu işlem
-Shift+Click / Ctrl+Click ile birden fazla satır seçimi. Seçili satırlara toplu DELETE, clipboard'a kopyalama veya CSV export.
-
-### Gelişmiş filtre çubuğu
-Mevcut filtre sadece `contains`. Hedef: `= 'değer'`, `> 100`, `IS NULL`, `LIKE '%x%'` — client-side değil, WHERE clause olarak browse sorgusuna eklenir.
-
-### Satır kopyalama / duplicate
-Seçili satırı INSERT olarak çalıştır. "Duplicate Row" sağ-tık aksiyonu.
-
----
-
 ## 🛠 Orta Öncelik
 
 ### Trigger browser
@@ -30,9 +17,6 @@ Sorgu bitince altta `✓ 1.243 satır — 87ms`. Şu an Messages tab'ında var a
 ---
 
 ## 💡 Düşük Öncelik / Uzun Vadeli
-
-### CSV / JSON import
-Dosyadan tablo yükle — `COPY table FROM STDIN`. Hedef tablo seçimi + kolon mapping diyaloğu.
 
 ### Şema anlık görüntüsü (Snapshot)
 "Şu anki şemayı kaydet" → daha sonra Schema Diff ile geçmiş snapshot'a karşılaştır. `DbEvent::SchemaSnapshot` zaten mevcut, UI eksik.
@@ -56,3 +40,9 @@ Aynı connection'da iki sorguyu aynı anda çalıştır. Büyük mimari değişi
 | Dashboard tablolarında sıralama yok | `sort_by` state ekle |
 
 ✓ Çözüldü: Ctrl+A (v-next), NULL rengi config'e kaydedilmiyor (v-next), column genişlik hesabı — zaten sample-based ve tek seferlik olduğu doğrulandı.
+
+✓ Çözüldü (Faz 14): çoklu satır seçimi & toplu işlem (kopyala/export/sil), gelişmiş
+operatör tabanlı filtre çubuğu, satır kopyalama/duplicate, CSV import (`COPY FROM STDIN`).
+Ayrıca kod incelemesiyle bulunan, bu dosyada hiç yer almamış üç boşluk da kapatıldı:
+DB/SSH şifreleri + AI API key artık OS keychain'de (`keyring`), bağlantılar için
+prod/staging renk etiketi (tab + switcher), JSON/JSONB pretty-print (View Full Value popup).

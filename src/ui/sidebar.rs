@@ -33,6 +33,8 @@ pub enum SidebarAction {
     ViewErDiagram { schema: String },
     /// Generate a script for schema.table — app.rs resolves columns if needed.
     GenerateScript { schema: String, table: String, kind: ScriptKind },
+    /// Import a local CSV file into schema.table via COPY FROM STDIN.
+    ImportCsv { schema: String, table: String },
 }
 
 // ── Script generation helpers (pub — used by app.rs when details arrive) ─────
@@ -733,6 +735,13 @@ impl Sidebar {
                                     if matches!(table.kind, TableKind::Table) {
                                         if ui.button(i18n.table_menu_edit()).clicked() {
                                             actions.push(SidebarAction::EditTable {
+                                                schema: schema_name.clone(),
+                                                table: table_name.clone(),
+                                            });
+                                            ui.close_menu();
+                                        }
+                                        if ui.button(i18n.table_menu_import_csv()).clicked() {
+                                            actions.push(SidebarAction::ImportCsv {
                                                 schema: schema_name.clone(),
                                                 table: table_name.clone(),
                                             });

@@ -1,4 +1,4 @@
-use crate::config::{ConnectionProfile, SshAuthMethod, SshTunnelConfig, SslMode};
+use crate::config::{ConnectionProfile, SshAuthMethod, SshTunnelConfig, SslMode, DANGER_PALETTE};
 use crate::i18n::I18n;
 
 #[derive(Debug, Default)]
@@ -54,6 +54,31 @@ impl ConnectionDialog {
                 if changed {
                     self.profile.group = if group_buf.is_empty() { None } else { Some(group_buf) };
                 }
+                ui.end_row();
+
+                ui.label(i18n.label_color());
+                ui.horizontal(|ui| {
+                    for [r, g, b] in DANGER_PALETTE {
+                        let color = egui::Color32::from_rgb(r, g, b);
+                        let is_selected = self.profile.color == Some([r, g, b]);
+                        let btn = ui.add(
+                            egui::Button::new("")
+                                .fill(color)
+                                .min_size(egui::Vec2::splat(16.0))
+                                .stroke(if is_selected {
+                                    egui::Stroke::new(2.0, egui::Color32::WHITE)
+                                } else {
+                                    egui::Stroke::NONE
+                                }),
+                        );
+                        if btn.clicked() {
+                            self.profile.color = Some([r, g, b]);
+                        }
+                    }
+                    if ui.small_button("✕").on_hover_text(i18n.hint_color_clear()).clicked() {
+                        self.profile.color = None;
+                    }
+                });
                 ui.end_row();
 
                 ui.label(i18n.label_host());

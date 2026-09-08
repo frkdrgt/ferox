@@ -93,6 +93,8 @@ impl I18n {
 
     pub fn label_name(&self) -> &'static str { self.t("Name:", "Ad:") }
     pub fn label_group(&self) -> &'static str { self.t("Group:", "Grup:") }
+    pub fn label_color(&self) -> &'static str { self.t("Color tag:", "Renk etiketi:") }
+    pub fn hint_color_clear(&self) -> &'static str { self.t("Clear color tag", "Renk etiketini kaldır") }
     pub fn label_host(&self) -> &'static str { self.t("Host:", "Sunucu:") }
     pub fn label_port(&self) -> &'static str { self.t("Port:", "Port:") }
     pub fn label_database(&self) -> &'static str { self.t("Database:", "Veritabanı:") }
@@ -250,6 +252,8 @@ impl I18n {
 
     pub fn btn_copy(&self) -> &'static str { self.t("Copy", "Kopyala") }
     pub fn btn_edit(&self) -> &'static str { self.t("Edit", "Düzenle") }
+    pub fn btn_json_pretty(&self) -> &'static str { self.t("Pretty", "Biçimlendir") }
+    pub fn btn_json_raw(&self) -> &'static str { self.t("Raw", "Ham") }
     pub fn btn_copy_as_insert(&self) -> &'static str { self.t("Copy as INSERT", "INSERT olarak kopyala") }
     pub fn hover_copy_insert(&self) -> &'static str {
         self.t(
@@ -357,16 +361,52 @@ impl I18n {
     pub fn seq_show_ddl(&self) -> &'static str { self.t("Show DDL", "DDL Göster") }
     pub fn cell_view_full(&self) -> &'static str { self.t("View Full Value", "Tam Değeri Göster") }
     pub fn cell_copy_value(&self) -> &'static str { self.t("Copy Value", "Değeri Kopyala") }
+    pub fn bulk_selected_count(&self, n: usize) -> String {
+        match self.0 {
+            Lang::En => format!("{n} rows selected"),
+            Lang::Tr => format!("{n} satır seçili"),
+        }
+    }
+    pub fn btn_bulk_copy(&self) -> &'static str { self.t("Copy Selected Rows", "Seçili Satırları Kopyala") }
+    pub fn btn_bulk_export_csv(&self) -> &'static str { self.t("Export Selected as CSV…", "Seçilenleri CSV Olarak Dışa Aktar…") }
+    pub fn btn_bulk_export_json(&self) -> &'static str { self.t("Export Selected as JSON…", "Seçilenleri JSON Olarak Dışa Aktar…") }
+    pub fn btn_bulk_delete(&self) -> &'static str { self.t("Delete Selected Rows…", "Seçili Satırları Sil…") }
+    pub fn btn_duplicate_row(&self) -> &'static str { self.t("Duplicate Row", "Satırı Çoğalt") }
+    pub fn confirm_bulk_delete_title(&self) -> &'static str { self.t("Delete rows?", "Satırlar silinsin mi?") }
+    pub fn confirm_bulk_delete_body(&self, n: usize) -> String {
+        match self.0 {
+            Lang::En => format!("This will permanently delete {n} row(s). This cannot be undone."),
+            Lang::Tr => format!("{n} satır kalıcı olarak silinecek. Bu işlem geri alınamaz."),
+        }
+    }
+    pub fn btn_confirm_delete(&self) -> &'static str { self.t("Delete", "Sil") }
     pub fn browse_filter_hint(&self) -> &'static str {
         self.t("id > 100  OR  name LIKE '%foo%'", "id > 100  VEYA  name LIKE '%foo%'")
     }
     pub fn btn_apply_filter(&self) -> &'static str { self.t("Filter", "Filtrele") }
+    pub fn filter_builder_col_hint(&self) -> &'static str { self.t("column", "kolon") }
+    pub fn filter_builder_val_hint(&self) -> &'static str { self.t("value", "değer") }
+    pub fn btn_add_filter(&self) -> &'static str { self.t("+ Add", "+ Ekle") }
+    pub fn hover_add_filter(&self) -> &'static str {
+        self.t("Append this condition to the WHERE filter above", "Bu koşulu yukarıdaki WHERE filtresine ekle")
+    }
     pub fn schema_menu_new_table(&self) -> &'static str { self.t("＋  New Table…", "＋  Yeni Tablo…") }
     pub fn schema_menu_er(&self) -> &'static str { self.t("📐  View ER Diagram", "📐  ER Diyagramını Gör") }
     pub fn schema_menu_refresh(&self) -> &'static str { self.t("↺  Refresh", "↺  Yenile") }
     pub fn table_menu_generate_script(&self) -> &'static str { self.t("📄  Generate Script", "📄  Script Oluştur") }
     pub fn table_menu_browse(&self) -> &'static str { self.t("▶  Browse rows", "▶  Satırlara Gözat") }
     pub fn table_menu_edit(&self) -> &'static str { self.t("✎  Edit Table…", "✎  Tabloyu Düzenle…") }
+    pub fn table_menu_import_csv(&self) -> &'static str { self.t("⇩  Import CSV…", "⇩  CSV İçe Aktar…") }
+    pub fn import_csv_title(&self) -> &'static str { self.t("Import CSV", "CSV İçe Aktar") }
+    pub fn import_csv_detected_cols(&self) -> &'static str { self.t("Detected columns (from CSV header):", "Algılanan kolonlar (CSV başlığından):") }
+    pub fn btn_import(&self) -> &'static str { self.t("Import", "İçe Aktar") }
+    pub fn import_csv_running(&self) -> &'static str { self.t("Importing…", "İçe aktarılıyor…") }
+    pub fn import_csv_done(&self, rows: u64) -> String {
+        match self.0 {
+            Lang::En => format!("Imported {rows} row(s)."),
+            Lang::Tr => format!("{rows} satır içe aktarıldı."),
+        }
+    }
     pub fn table_menu_show_ddl(&self) -> &'static str { self.t("{}  Show DDL", "{}  DDL Göster") }
     pub fn table_menu_count(&self) -> &'static str { self.t("∑  Count rows", "∑  Satır Say") }
     pub fn table_menu_show_cols(&self) -> &'static str { self.t("≡  Show columns", "≡  Sütunları Göster") }

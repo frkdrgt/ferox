@@ -453,6 +453,12 @@ impl TabManager {
         }
     }
 
+    pub fn set_import_done(&mut self, rows: u64) {
+        if let Some(p) = self.active_panel_mut() {
+            p.set_import_done(rows);
+        }
+    }
+
     /// Take the pending NL prompt from the active panel (if any).
     pub fn take_active_nl_submit(&mut self) -> Option<String> {
         self.active_panel_mut()?.nl_submit.take()
@@ -584,11 +590,11 @@ impl TabManager {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
-    /// `conns` is a slice of (conn_id, name, db_tx) triples.
+    /// `conns` is a slice of (conn_id, name, db_tx, danger_color) tuples.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        conns: &[(usize, &str, &Sender<DbCommand>)],
+        conns: &[(usize, &str, &Sender<DbCommand>, Color32)],
         history: &mut QueryHistory,
         snippets: &mut crate::snippets::Snippets,
         i18n: &I18n,
@@ -649,7 +655,7 @@ impl TabManager {
             }
             if let Some(pid) = kill_pid {
                 if let Some(conn_id) = self.dashboard_conn_id() {
-                    if let Some(tx) = conns.iter().find(|(id, _, _)| *id == conn_id).map(|(_, _, tx)| *tx) {
+                    if let Some(tx) = conns.iter().find(|(id, _, _, _)| *id == conn_id).map(|(_, _, tx, _)| *tx) {
                         let _ = tx.send(crate::db::DbCommand::KillConnection { pid });
                         self.dashboard.set_loading();
                     }
@@ -672,14 +678,14 @@ impl TabManager {
             // exists, silently adopt it so the editor stays usable.
             if active_idx < self.tabs.len() {
                 let current = self.tabs[active_idx].conn_id;
-                if !conns.iter().any(|(id, _, _)| *id == current) && conns.len() == 1 {
+                if !conns.iter().any(|(id, _, _, _)| *id == current) && conns.len() == 1 {
                     self.tabs[active_idx].conn_id = conns[0].0;
                 }
             }
 
             if let Some(tab) = self.tabs.get(active_idx) {
                 let tab_conn_id = tab.conn_id;
-                let db_tx_opt = conns.iter().find(|(id, _, _)| *id == tab_conn_id).map(|(_, _, tx)| *tx);
+                let db_tx_opt = conns.iter().find(|(id, _, _, _)| *id == tab_conn_id).map(|(_, _, tx, _)| *tx);
 
                 if let Some(db_tx) = db_tx_opt {
                     let was_running = self.tabs[active_idx].panel().map(|p| p.is_running()).unwrap_or(false);
@@ -715,7 +721,7 @@ impl TabManager {
     fn render_tab_bar(
         &self,
         ui: &mut egui::Ui,
-        conns: &[(usize, &str, &Sender<DbCommand>)],
+        conns: &[(usize, &str, &Sender<DbCommand>, Color32)],
         i18n: &I18n,
     ) -> (Option<usize>, Option<usize>, bool, Option<TabContextAction>) {
         let mut to_select: Option<usize> = None;
@@ -749,9 +755,16 @@ impl TabManager {
         // Short connection name: "db" part of "db@host", truncated to 10 chars.
         let short_conn = |conn_id: usize| -> String {
             conns.iter()
-                .find(|(id, _, _)| *id == conn_id)
-                .map(|(_, name, _)| truncate(name.split('@').next().unwrap_or(name), 10))
+                .find(|(id, _, _, _)| *id == conn_id)
+                .map(|(_, name, _, _)| truncate(name.split('@').next().unwrap_or(name), 10))
                 .unwrap_or_default()
+        };
+        // Danger-tag color for a tab's connection (see `ConnectionProfile::resolved_color`).
+        let conn_color = |conn_id: usize| -> Color32 {
+            conns.iter()
+                .find(|(id, _, _, _)| *id == conn_id)
+                .map(|(_, _, _, color)| *color)
+                .unwrap_or(Color32::TRANSPARENT)
         };
 
         // Borrow the painter before entering child UIs.
@@ -866,6 +879,18 @@ impl TabManager {
                 ui.ctx().data_mut(|d| d.insert_temp(hover_id, is_hovered_now));
 
                 let tab_rect = r.response.rect;
+
+                // Danger-tag top accent — distinct from the active-tab bottom line below,
+                // shown on every tab so a "Production" connection stands out even when
+                // it isn't the active tab.
+                let tag_color = conn_color(*tab_conn_id);
+                if tag_color != Color32::TRANSPARENT {
+                    painter.hline(
+                        tab_rect.x_range(),
+                        tab_rect.top() + 1.0,
+                        egui::Stroke::new(2.0, tag_color),
+                    );
+                }
 
                 if *is_active {
                     // Blue bottom accent line.
