@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="ferox logo" width="112">
+
 ```
 ███████╗███████╗██████╗  ██████╗ ██╗  ██╗
 ██╔════╝██╔════╝██╔══██╗██╔═══██╗╚██╗██╔╝

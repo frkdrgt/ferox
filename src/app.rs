@@ -144,13 +144,12 @@ impl PgClientApp {
         // profiles the home screen's Quick Start list is the entry point.
         let show_connection_dialog = config.connections.is_empty();
 
-        // Load logo texture for the About dialog.
+        // Logo texture for the home header and About dialog — pre-rendered at
+        // 128 px (crisp at 44 pt on HiDPI) so startup only decodes, no resize.
         let about_texture = {
-            let bytes = include_bytes!("../assets/logo.png");
+            let bytes = include_bytes!("../assets/logo-128.png");
             if let Ok(img) = image::load_from_memory(bytes) {
-                let img = img
-                    .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
-                    .into_rgba8();
+                let img = img.into_rgba8();
                 let (w, h) = img.dimensions();
                 let color_image = egui::ColorImage::from_rgba_unmultiplied(
                     [w as usize, h as usize],

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- ferox logo: fox-head outline (ears, cheeks, chin) holding a line-style database.
+       Source of truth — logo.png / logo-128.png / icon-256.png are rendered from this
+       file (see CLAUDE.md "Logo"). -->
+  <defs>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#62b0ea"/>
+      <stop offset="1" stop-color="#2a66a8"/>
+    </linearGradient>
+  </defs>
+  <path d="M82,206 L84,26 L210,156 L302,156 L428,26 L430,206
+           L462,318 Q468,342 448,362 L318,468 Q256,502 194,468 L64,362 Q44,342 50,318 Z"
+        fill="url(#blue)" stroke="url(#blue)" stroke-width="24" stroke-linejoin="round"/>
+  <g fill="#ffffff" fill-opacity=".22" stroke="#ffffff" stroke-opacity=".22" stroke-width="10" stroke-linejoin="round">
+    <polygon points="102,76 102,184 170,154"/>
+    <polygon points="410,76 410,184 342,154"/>
+  </g>
+  <g fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round" transform="translate(0,-8)">
+    <ellipse cx="256" cy="262" rx="98" ry="30"/>
+    <path d="M158,262 v118 a98,30 0 0 0 196,0 v-118"/>
+    <path d="M158,321 a98,30 0 0 0 196,0"/>
+  </g>
+</svg>

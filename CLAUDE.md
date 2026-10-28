@@ -146,6 +146,10 @@ cargo build --release # ~6.9MB binary, LTO
 - **Faz 15**: Seçili SQL'i çalıştırma, AI Explain/Optimize/Fix error, ALTER destekli tablo yapı
   editörü (DDL önizleme, tek transaction), şema dump'ı (pg_dump'sız), INSERT export, DBeaver
   bağlantı import'u, GitHub releases güncelleme kontrolü; Ctrl+Enter çift çalıştırma düzeltmesi, v0.3.1 ✓
+- **Faz 16**: UI yenileme — tema token'ları (`theme.rs`), karşılama ekranı (`home.rs`), Phosphor ikonları
+  (19 KB alt küme), toolbar, dashboard özet kartları, sonuç grid'i; yeni logo (`logo.svg`).
+  Perf: font/başlık her frame'de kurulmuyor (boşta CPU 0), sistem fontu okunmuyor (~44 MB daha az
+  private bytes), logo açılışta resize edilmiyor, v0.3.2 ✓
 
 ## AI Modülü (src/ai.rs)
 - `AiHandle::spawn()` — ayrı std::thread + kendi current_thread tokio runtime'ı
@@ -183,6 +187,15 @@ Renk token'ları `src/ui/theme.rs`'de; `src/app.rs:configure_style()` bunları e
   Yeni Unicode sembol kullanmadan önce bu fontlarda olduğundan emin ol; yoksa Phosphor ikonu kullan
 - Fontlar `theme::install_fonts()` ile **bir kez** kurulur (`set_fonts` her frame'de font atlas'ını yeniden kurar)
 - `ctx.send_viewport_cmd` her çağrıda repaint ister — her frame çağırma (pencere başlığı sadece değişince gönderilir)
+
+## Logo
+- Kaynak: `assets/logo.svg` (tilki kafası hattı + çizgi stili DB, accent mavisi gradyan, saydam zemin)
+- Ondan render edilenler (hepsi saydam PNG): `logo.png` 512 px (README/crates, `build.rs` bundan
+  `icon.ico` üretir), `icon-256.png` (pencere/görev çubuğu ikonu, `main.rs::load_icon`),
+  `logo-128.png` (karşılama başlığı + About, `app.rs`)
+- Açılışta sadece decode yapılır, **resize yapılmaz** — yeni boyut gerekirse SVG'den önceden render et
+- SVG değişince: headless Chrome ile `--default-background-color=00000000 --window-size=N,N --screenshot`
+  (512/256/128) render edip `assets/`'e koy
 
 ## Syntax Highlighting
 `src/ui/syntax.rs` — sıfırdan yazılmış SQL tokenizer
