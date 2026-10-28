@@ -75,7 +75,7 @@ impl ConnectionDialog {
                             self.profile.color = Some([r, g, b]);
                         }
                     }
-                    if ui.small_button("✕").on_hover_text(i18n.hint_color_clear()).clicked() {
+                    if ui.small_button(crate::ui::theme::icon::X).on_hover_text(i18n.hint_color_clear()).clicked() {
                         self.profile.color = None;
                     }
                 });
@@ -221,17 +221,22 @@ impl ConnectionDialog {
         // Test connection result
         match &self.test_result {
             Some(Ok(())) => {
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 80), i18n.test_conn_ok());
+                ui.colored_label(crate::ui::theme::SUCCESS, i18n.test_conn_ok());
             }
             Some(Err(msg)) => {
                 let full = format!("{}{}", i18n.test_conn_fail(), msg);
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), full);
+                ui.colored_label(crate::ui::theme::DANGER, full);
             }
             None => {}
         }
 
         ui.horizontal(|ui| {
-            if ui.button(i18n.btn_connect()).clicked() {
+            let connect_btn = egui::Button::new(
+                egui::RichText::new(format!("{}  {}", crate::ui::theme::icon::PLUGS_CONNECTED, i18n.btn_connect()))
+                    .color(egui::Color32::WHITE),
+            )
+            .fill(crate::ui::theme::ACCENT);
+            if ui.add(connect_btn).clicked() {
                 connect = true;
             }
             let test_label = if self.testing { i18n.btn_testing() } else { i18n.btn_test_connection() };

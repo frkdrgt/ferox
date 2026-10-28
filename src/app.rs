@@ -96,6 +96,9 @@ pub struct PgClientApp {
     /// True for a check the user started by hand — then "up to date" and errors
     /// are reported too; a silent startup check only ever announces a release.
     update_manual: bool,
+    /// Last title sent to the OS window. `send_viewport_cmd` requests a repaint,
+    /// so sending it every frame kept the app redrawing nonstop while idle.
+    window_title: String,
 }
 
 #[derive(Debug, Default)]
@@ -130,12 +133,16 @@ impl Default for ConnectionStatus {
 
 impl PgClientApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::ui::theme::install_fonts(&cc.egui_ctx);
         configure_style(&cc.egui_ctx);
 
         let config = AppConfig::load().unwrap_or_default();
         let history = QueryHistory::load().unwrap_or_default();
         let snippets = Snippets::load().unwrap_or_default();
         let i18n = I18n::new(config.language);
+        // First run: open the connection dialog straight away. With saved
+        // profiles the home screen's Quick Start list is the entry point.
+        let show_connection_dialog = config.connections.is_empty();
 
         // Load logo texture for the About dialog.
         let about_texture = {
@@ -184,7 +191,7 @@ impl PgClientApp {
             config,
             history,
             snippets,
-            show_connection_dialog: true,
+            show_connection_dialog,
             safe_mode: false,
             i18n,
             show_about: false,
@@ -199,6 +206,7 @@ impl PgClientApp {
             update_rx,
             update_state,
             update_manual: false,
+            window_title: String::new(),
         }
     }
 
@@ -765,7 +773,7 @@ impl PgClientApp {
                     if self.config.ai.is_configured() {
                         ui.label(
                             egui::RichText::new(format!(
-                                "✓ {} / {}",
+                                "\u{E182} {} / {}",
                                 self.config.ai.provider,
                                 self.config.ai.effective_model()
                             ))
@@ -794,6 +802,75 @@ impl PgClientApp {
                 if ui.button(i18n.menu_about()).clicked() {
                     self.show_about = true;
                     ui.close_menu();
+                }
+            });
+
+            ui.separator();
+            self.render_toolbar(ui);
+        });
+    }
+
+    /// Icon+label shortcuts next to the menus (same row — costs no extra height).
+    fn render_toolbar(&mut self, ui: &mut egui::Ui) {
+        use crate::ui::theme::{self as t, icon};
+        let i18n = self.i18n;
+        let active_conn_id = self.connections.get(self.active_conn).map(|c| c.id);
+        let connected = active_conn_id.is_some();
+
+        t::flat_buttons(ui, |ui| {
+            if ui
+                .button(format!("{}  {}", icon::PLUS, i18n.tb_new_connection()))
+                .on_hover_text(i18n.menu_new_connection())
+                .clicked()
+            {
+                self.show_connection_dialog = true;
+                self.connection_dialog.reset();
+            }
+            if ui
+                .add_enabled(connected, egui::Button::new(format!("{}  {}", icon::FILE_SQL, i18n.tb_new_query())))
+                .on_hover_text("Ctrl+T")
+                .clicked()
+            {
+                if let Some(id) = active_conn_id {
+                    self.tab_manager.new_tab(id);
+                }
+            }
+            if ui
+                .add_enabled(connected, egui::Button::new(format!("{}  {}", icon::GAUGE, i18n.tb_dashboard())))
+                .clicked()
+            {
+                if let Some(id) = active_conn_id {
+                    self.tab_manager.open_or_focus_dashboard(id);
+                }
+            }
+            if ui
+                .add_enabled(connected, egui::Button::new(format!("{}  {}", icon::INTERSECT, i18n.tb_join_builder())))
+                .clicked()
+            {
+                self.join_builder.open();
+            }
+            if ui
+                .add_enabled(connected, egui::Button::new(format!("{}  {}", icon::GIT_DIFF, i18n.tb_schema_diff())))
+                .clicked()
+            {
+                if let Some(id) = active_conn_id {
+                    self.tab_manager.open_schema_diff(id, id);
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(icon::INFO).on_hover_text(i18n.menu_about()).clicked() {
+                    self.show_about = true;
+                }
+                // Safe mode: accent-filled while on, so it is visible at a glance.
+                let safe_text = RichText::new(format!("{}  {}", icon::SHIELD_CHECK, i18n.tb_safe_mode()));
+                let safe_btn = if self.safe_mode {
+                    egui::Button::new(safe_text.color(Color32::WHITE)).fill(t::ACCENT)
+                } else {
+                    egui::Button::new(safe_text)
+                };
+                if ui.add(safe_btn).on_hover_text(i18n.safe_mode_indicator()).clicked() {
+                    self.safe_mode = !self.safe_mode;
                 }
             });
         });
@@ -863,7 +940,7 @@ impl PgClientApp {
                     UpdateState::Idle => {}
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button(crate::ui::theme::icon::X).clicked() {
                         dismiss = true;
                     }
                 });
@@ -877,7 +954,10 @@ impl PgClientApp {
 
     fn render_status_bar(&self, ctx: &egui::Context) {
         let i18n = self.i18n;
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+        use crate::ui::theme::{self as t, icon};
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(t::chrome_frame(egui::Margin::symmetric(10.0, 3.0)))
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let status = self
                     .connections
@@ -893,10 +973,9 @@ impl PgClientApp {
                         ui.colored_label(egui::Color32::YELLOW, i18n.status_connecting());
                     }
                     ConnectionStatus::Connected { host, database } => {
-                        ui.colored_label(
-                            egui::Color32::GREEN,
-                            format!("⬤  {database}@{host}"),
-                        );
+                        ui.label(RichText::new("●").small().color(t::SUCCESS));
+                        ui.label(RichText::new(icon::DATABASE).color(t::TEXT_MUTED));
+                        ui.label(RichText::new(format!("{database}@{host}")).color(t::TEXT));
                     }
                     ConnectionStatus::Error(msg) => {
                         ui.colored_label(egui::Color32::RED, i18n.status_error(msg));
@@ -904,11 +983,13 @@ impl PgClientApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(elapsed) = self.tab_manager.last_query_duration() {
-                        ui.label(format!("{elapsed:.2}ms"));
-                        ui.label(" | ");
+                        ui.label(RichText::new(format!("{elapsed:.2} ms")).color(t::TEXT_MUTED));
+                        ui.label(RichText::new(icon::TIMER).color(t::TEXT_FAINT));
+                        ui.add_space(8.0);
                     }
                     if let Some(row_count) = self.tab_manager.result_row_count() {
-                        ui.label(i18n.status_rows(row_count));
+                        ui.label(RichText::new(i18n.status_rows(row_count)).color(t::TEXT_MUTED));
+                        ui.label(RichText::new(icon::ROWS).color(t::TEXT_FAINT));
                     }
                 });
             });
@@ -1051,7 +1132,7 @@ impl PgClientApp {
                             );
                         }
                         ui.add_space(5.0);
-                        ui.colored_label(*dot_color, "●");
+                        ui.label(RichText::new(crate::ui::theme::icon::DATABASE).size(15.0).color(*dot_color));
                         // Truncate long names for display; show full name on hover.
                         let display_name = if name.len() > 34 {
                             format!("{}…", &name[..34])
@@ -1070,7 +1151,7 @@ impl PgClientApp {
                             new_active = *i;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("×")
+                            if ui.small_button(crate::ui::theme::icon::X)
                                 .on_hover_text(i18n.hover_close_conn())
                                 .clicked()
                             {
@@ -1081,7 +1162,8 @@ impl PgClientApp {
                 }
                 ui.horizontal(|ui| {
                     ui.add_space(2.0);
-                    if ui.small_button("+").on_hover_text(i18n.hover_new_connection()).clicked() {
+                    let label = format!("{}  {}", crate::ui::theme::icon::PLUS, i18n.hover_new_connection());
+                    if ui.small_button(label).clicked() {
                         open_dialog = true;
                     }
                 });
@@ -1112,7 +1194,7 @@ impl eframe::App for PgClientApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // Force dark panel background on macOS light mode — prevents transparent
         // Frame::none() areas from showing the white system window background.
-        let c = egui::Color32::from_rgb(43, 43, 43); // #2b2b2b
+        let c = crate::ui::theme::BG;
         [c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, 1.0]
     }
 
@@ -1149,7 +1231,10 @@ impl eframe::App for PgClientApp {
                 _ => "ferox".to_owned(),
             })
             .unwrap_or_else(|| "ferox".to_owned());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        if title != self.window_title {
+            self.window_title = title.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
 
         // Rebuild autocomplete data only when sidebar schema/columns changed.
         for conn in &mut self.connections {
@@ -1196,9 +1281,12 @@ impl eframe::App for PgClientApp {
         }
 
         // Top menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            self.render_menu(ui);
-        });
+        egui::TopBottomPanel::top("menu_bar")
+            .frame(crate::ui::theme::chrome_frame(egui::Margin::symmetric(8.0, 4.0)))
+            .show_separator_line(true)
+            .show(ctx, |ui| {
+                self.render_menu(ui);
+            });
 
         self.poll_update_check();
         self.render_update_banner(ctx);
@@ -1270,8 +1358,35 @@ impl eframe::App for PgClientApp {
         egui::SidePanel::left("sidebar")
             .resizable(true)
             .min_width(180.0)
-            .default_width(220.0)
+            .default_width(240.0)
+            .frame(crate::ui::theme::chrome_frame(egui::Margin::same(0.0)))
             .show(ctx, |ui| {
+                // Footer first so it claims the bottom before the tree fills the rest.
+                if let Some(conn) = self.connections.get(self.active_conn) {
+                    use crate::ui::theme::{self as t, icon};
+                    let (schemas, tables) = conn.sidebar.counts();
+                    let where_ = match &conn.status {
+                        ConnectionStatus::Connected { host, database } => format!("{database}@{host}"),
+                        _ => conn.name.clone(),
+                    };
+                    egui::TopBottomPanel::bottom("sidebar_footer")
+                        .frame(egui::Frame::none().inner_margin(egui::Margin::symmetric(10.0, 6.0)))
+                        .show_inside(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(icon::HARD_DRIVES).color(t::TEXT_FAINT));
+                                ui.add(
+                                    egui::Label::new(RichText::new(where_).small().color(t::TEXT_MUTED))
+                                        .truncate(),
+                                );
+                            });
+                            ui.label(
+                                RichText::new(i18n.sidebar_counts(schemas, tables))
+                                    .small()
+                                    .color(t::TEXT_FAINT),
+                            );
+                        });
+                }
+
                 // Connection switcher at top
                 if !self.connections.is_empty() {
                     self.render_connection_switcher(ui);
@@ -1283,10 +1398,16 @@ impl eframe::App for PgClientApp {
                 let actions = if let Some(conn) = self.connections.get_mut(self.active_conn) {
                     conn.sidebar.show(ui, &i18n)
                 } else {
+                    crate::ui::theme::empty_state(
+                        ui,
+                        crate::ui::theme::icon::TREE_STRUCTURE,
+                        i18n.lbl_no_connection(),
+                        i18n.sidebar_empty_hint(),
+                    );
                     ui.vertical_centered(|ui| {
-                        ui.add_space(20.0);
-                        ui.label(egui::RichText::new(i18n.lbl_no_connection()).color(egui::Color32::GRAY));
-                        if ui.button(i18n.btn_connect_dialog()).clicked() {
+                        ui.add_space(8.0);
+                        let label = format!("{}  {}", crate::ui::theme::icon::PLUS, i18n.btn_connect_dialog());
+                        if ui.button(label).clicked() {
                             self.show_connection_dialog = true;
                             self.connection_dialog.reset();
                         }
@@ -1441,7 +1562,20 @@ impl eframe::App for PgClientApp {
             });
 
         // Central panel — query editor + results (with tab bar)
+        let mut home_action = None;
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.connections.is_empty() {
+                home_action = crate::ui::home::show(
+                    ui,
+                    &i18n,
+                    &self.config.connections,
+                    &self.history,
+                    &self.snippets,
+                    &self.config.ai,
+                    self.about_texture.as_ref(),
+                );
+                return;
+            }
             // Build the list of (conn_id, name, &db_tx, danger_color) for tab_manager.show()
             let conn_refs: Vec<(usize, &str, &Sender<DbCommand>, Color32)> = self
                 .connections
@@ -1461,6 +1595,18 @@ impl eframe::App for PgClientApp {
                 null_color,
             );
         });
+
+        match home_action {
+            Some(crate::ui::home::HomeAction::Connect(idx)) => self.connect_to_profile(idx),
+            Some(crate::ui::home::HomeAction::NewConnection) => {
+                self.show_connection_dialog = true;
+                self.connection_dialog.reset();
+            }
+            Some(crate::ui::home::HomeAction::ImportDbeaver) => {
+                self.dbeaver_dialog.open_auto(&self.config.connections);
+            }
+            None => {}
+        }
 
         // ── Handle pending NL→SQL requests from the active panel ─────────────
         // Two-step for every AI request: fetch the live schema from the DB, then
@@ -1650,29 +1796,63 @@ fn is_dml(sql: &str) -> bool {
 }
 
 fn configure_style(ctx: &egui::Context) {
-    // ── JetBrains Darcula-inspired dark visuals ──────────────────────────────
+    use crate::ui::theme as t;
+
+    // ── JetBrains (New UI) dark visuals — tokens live in ui/theme.rs ─────────
     let mut vis = egui::Visuals::dark();
 
-    vis.panel_fill     = egui::Color32::from_rgb(43, 43, 43);   // #2b2b2b
-    vis.window_fill    = egui::Color32::from_rgb(60, 63, 65);   // #3c3f41
-    vis.faint_bg_color = egui::Color32::from_rgb(49, 51, 53);   // #313335
+    vis.panel_fill        = t::BG;
+    vis.window_fill       = t::SURFACE;
+    vis.faint_bg_color    = t::SURFACE;
+    vis.extreme_bg_color  = t::EDITOR_BG; // TextEdit / ScrollArea backgrounds
+    vis.code_bg_color     = t::EDITOR_BG;
+    vis.window_stroke     = egui::Stroke::new(1.0, t::BORDER_STRONG);
+    vis.override_text_color = None;
 
-    vis.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(49, 51, 53);
-    vis.widgets.inactive.bg_fill       = egui::Color32::from_rgb(76, 80, 82);   // #4c5052
-    vis.widgets.hovered.bg_fill        = egui::Color32::from_rgb(92, 97, 100);  // #5c6164
-    vis.widgets.hovered.weak_bg_fill   = egui::Color32::from_rgb(92, 97, 100);
-    vis.widgets.active.bg_fill         = egui::Color32::from_rgb(78, 159, 222); // #4e9fde
+    vis.widgets.noninteractive.bg_fill      = t::SURFACE;
+    vis.widgets.noninteractive.weak_bg_fill = t::SURFACE;
+    vis.widgets.noninteractive.bg_stroke    = egui::Stroke::new(1.0, t::BORDER);
+    vis.widgets.noninteractive.fg_stroke    = egui::Stroke::new(1.0, t::TEXT);
+
+    vis.widgets.inactive.bg_fill      = t::SURFACE_RAISED;
+    vis.widgets.inactive.weak_bg_fill = t::SURFACE_RAISED;
+    vis.widgets.inactive.fg_stroke    = egui::Stroke::new(1.0, t::TEXT);
+
+    vis.widgets.hovered.bg_fill      = egui::Color32::from_rgb(92, 97, 100); // #5c6164
+    vis.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(76, 80, 86);
+    vis.widgets.hovered.bg_stroke    = egui::Stroke::new(1.0, t::BORDER_STRONG);
+    vis.widgets.active.bg_fill       = t::ACCENT;
+    vis.widgets.active.weak_bg_fill  = t::ACCENT;
+
+    for w in [
+        &mut vis.widgets.noninteractive,
+        &mut vis.widgets.inactive,
+        &mut vis.widgets.hovered,
+        &mut vis.widgets.active,
+        &mut vis.widgets.open,
+    ] {
+        w.rounding = egui::Rounding::same(5.0);
+    }
 
     vis.selection.bg_fill =
         egui::Color32::from_rgba_premultiplied(33, 66, 131, 180); // #214283
-    vis.selection.stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(78, 159, 222)); // #4e9fde
+    vis.selection.stroke = egui::Stroke::new(1.0, t::ACCENT);
+    vis.hyperlink_color  = t::ACCENT;
 
-    vis.widgets.noninteractive.bg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(74, 76, 78)); // #4a4c4e
-
-    vis.window_rounding = egui::Rounding::same(6.0);
-    vis.menu_rounding   = egui::Rounding::same(4.0);
+    vis.window_rounding = egui::Rounding::same(t::CARD_ROUNDING);
+    vis.menu_rounding   = egui::Rounding::same(6.0);
+    vis.window_shadow   = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 6.0),
+        blur: 18.0,
+        spread: 0.0,
+        color: egui::Color32::from_black_alpha(110),
+    };
+    vis.popup_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 4.0),
+        blur: 12.0,
+        spread: 0.0,
+        color: egui::Color32::from_black_alpha(90),
+    };
 
     ctx.set_visuals(vis);
 
@@ -1682,8 +1862,9 @@ fn configure_style(ctx: &egui::Context) {
     style.spacing.item_spacing   = egui::vec2(6.0, 5.0);
     style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.menu_margin    = egui::Margin::same(6.0);
-    style.spacing.window_margin  = egui::Margin::same(10.0);
+    style.spacing.window_margin  = egui::Margin::same(12.0);
     style.spacing.indent         = 12.0;
+    style.spacing.interact_size.y = 24.0;
 
     use egui::{FontId, TextStyle};
     style.text_styles.insert(TextStyle::Heading,   FontId::proportional(15.0));
@@ -1693,31 +1874,4 @@ fn configure_style(ctx: &egui::Context) {
     style.text_styles.insert(TextStyle::Monospace,  FontId::monospace(13.0));
 
     ctx.set_style(style);
-
-    // ── Windows symbol font fallback ─────────────────────────────────────────
-    // egui's bundled Ubuntu/Hack fonts lack many Unicode symbol codepoints
-    // (▶ ✕ ✎ ↺ ⟳ ＋ etc.).  On Windows there is no automatic OS-level fallback,
-    // so we load Segoe UI Symbol + Segoe UI Emoji from the system fonts directory
-    // and append them as fallbacks for every font family.
-    #[cfg(target_os = "windows")]
-    {
-        let mut fonts = egui::FontDefinitions::default();
-        for path in &[
-            "C:/Windows/Fonts/seguisym.ttf",
-            "C:/Windows/Fonts/seguiemj.ttf",
-        ] {
-            if let Ok(data) = std::fs::read(path) {
-                let name = std::path::Path::new(path)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                fonts.font_data.insert(name.clone(), egui::FontData::from_owned(data));
-                for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                    fonts.families.entry(family).or_default().push(name.clone());
-                }
-            }
-        }
-        ctx.set_fonts(fonts);
-    }
 }

@@ -300,7 +300,7 @@ impl TableDialog {
 
         if !self.error.is_empty() {
             ui.add_space(4.0);
-            ui.colored_label(Color32::from_rgb(230, 80, 80), &self.error.clone());
+            ui.colored_label(crate::ui::theme::DANGER, &self.error.clone());
         }
 
         ui.add_space(8.0);
@@ -522,7 +522,7 @@ impl TableDialog {
                                     ui.selectable_value(&mut ni.method, m.to_string(), *m);
                                 }
                             });
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button(crate::ui::theme::icon::X).clicked() {
                             remove_new_index = Some(i);
                         }
                         ui.end_row();
@@ -564,16 +564,16 @@ impl TableDialog {
             let warnings = self.destructive_changes(i18n);
             if !warnings.is_empty() {
                 ui.add_space(4.0);
-                ui.colored_label(Color32::from_rgb(230, 80, 80), RichText::new(i18n.td_warn_header()).strong());
+                ui.colored_label(crate::ui::theme::DANGER, RichText::new(i18n.td_warn_header()).strong());
                 for w in warnings {
-                    ui.colored_label(Color32::from_rgb(230, 80, 80), format!("  • {w}"));
+                    ui.colored_label(crate::ui::theme::DANGER, format!("  • {w}"));
                 }
             }
         }
 
         if !self.error.is_empty() {
             ui.add_space(4.0);
-            ui.colored_label(Color32::from_rgb(230, 80, 80), &self.error.clone());
+            ui.colored_label(crate::ui::theme::DANGER, &self.error.clone());
         }
 
         ui.add_space(8.0);
@@ -961,7 +961,7 @@ fn render_column_defs(
                         );
 
                         if !show_pk || col_count > 1 {
-                            if ui.small_button("✕").clicked() {
+                            if ui.small_button(crate::ui::theme::icon::X).clicked() {
                                 to_delete = Some(i);
                             }
                         } else {

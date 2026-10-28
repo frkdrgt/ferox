@@ -68,6 +68,8 @@ src/
     ├── autocomplete.rs   — Tablo/sütun otomatik tamamlama
     ├── import_dialog.rs  — CSV import onay diyaloğu (kolon isimleri CSV header'ından)
     ├── dbeaver_dialog.rs — DBeaver import önizleme/seçim diyaloğu
+    ├── home.rs           — Karşılama ekranı (bağlantı yokken): sayaç kartları, Quick Start, kısayollar, son sorgular
+    ├── theme.rs          — Renk token'ları, card_frame/card_header/empty_state, ikon fontu kurulumu
     └── syntax.rs         — Sıfırdan SQL/JSON tokenizer (keyword/type/string/comment)
 ```
 
@@ -161,11 +163,26 @@ cargo build --release # ~6.9MB binary, LTO
 Şu an açık madde yok.
 
 ## UI Tema Notları
-`src/app.rs:configure_style()` — JetBrains Darcula paleti:
-- Panel: `#2b2b2b`, Window: `#3c3f41`, Faint: `#313335`
-- Accent/seçim: `#4e9fde` (mavi), Hover: `#5c6164`
-- Run butonu: `#499c54` (yeşil), Cancel: `#c75450` (kırmızı)
-- Yeni renk/spacing eklerken bu fonksiyonu güncelle, hardcode etme
+Renk token'ları `src/ui/theme.rs`'de; `src/app.rs:configure_style()` bunları egui `Visuals`'a uygular
+(JetBrains New UI dark paleti, üç yüzey katmanı):
+- `BG` `#1e1f22` (içerik zemini), `SURFACE` `#2b2d30` (menü/sidebar/status bar/kartlar), `SURFACE_RAISED` `#393b40` (hover)
+- `EDITOR_BG` `#191a1c` (TextEdit), `BORDER` `#393b40`, metin: `TEXT` / `TEXT_MUTED` / `TEXT_FAINT`
+- Accent/seçim: `#4e9fde` (mavi), Run butonu: `#499c54` (yeşil), Cancel: `#c75450` (kırmızı)
+- Kart için `theme::card_frame()` + `card_header()`, boş alanlar için `theme::empty_state()`
+- Ortak widget'lar: `grid_header()` / `grid_col_rule()` (egui_extras tablo header'ı ve kolon çizgisi),
+  `stat_card()`, `pill()`, `paint_count_badge()`, `flat_buttons()` (üst toolbar), `tab_toggle()`, `format_bytes()`
+- Toolbar menülerle aynı satırda (`app.rs::render_toolbar`) — ekstra dikey alan harcamaz
+- Dashboard özet kartları `set_data()` anında bir kez hesaplanır (`Summary`), her frame değil
+- Yeni renk/spacing eklerken `theme.rs`'e token ekle, hardcode etme
+- İkonlar: `egui-phosphor` sadece isim sabitleri için (`theme::icon::*`; i18n string'lerinde `\u{E…}` escape'i).
+  Font'un kendisi kullanılan glyph'lerin alt kümesi: `assets/phosphor-subset.ttf` (~19 KB, tam font ~480 KB).
+  **Yeni ikon ekleyince `python scripts/subset_icons.py` çalıştır** — unutulursa
+  `theme::tests::icon_subset_covers_used_glyphs` testi kırılır
+- Sistem fontu (Segoe vb.) **okunmaz** — eskiden açılışta 15 MB disk okuması + RAM'di. Tüm fontlar binary'de:
+  Ubuntu + Hack (Hack, Ubuntu'da olmayan ok/üçgenler için Proportional'a da fallback) + NotoEmoji + ikon alt kümesi.
+  Yeni Unicode sembol kullanmadan önce bu fontlarda olduğundan emin ol; yoksa Phosphor ikonu kullan
+- Fontlar `theme::install_fonts()` ile **bir kez** kurulur (`set_fonts` her frame'de font atlas'ını yeniden kurar)
+- `ctx.send_viewport_cmd` her çağrıda repaint ister — her frame çağırma (pencere başlığı sadece değişince gönderilir)
 
 ## Syntax Highlighting
 `src/ui/syntax.rs` — sıfırdan yazılmış SQL tokenizer

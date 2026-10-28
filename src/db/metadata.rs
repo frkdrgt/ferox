@@ -24,13 +24,13 @@ pub enum TableKind {
 }
 
 impl TableKind {
-    /// Single-char icon that renders well on Windows/macOS standard fonts.
+    /// Phosphor icon glyph (font installed by `ui::theme::install_fonts`).
     pub fn icon(&self) -> &'static str {
         match self {
-            TableKind::Table => "■",
-            TableKind::View => "◇",
-            TableKind::MaterializedView => "◆",
-            TableKind::ForeignTable => "○",
+            TableKind::Table => egui_phosphor::regular::TABLE,
+            TableKind::View => egui_phosphor::regular::EYE,
+            TableKind::MaterializedView => egui_phosphor::regular::STACK,
+            TableKind::ForeignTable => egui_phosphor::regular::LINK,
         }
     }
 
@@ -244,10 +244,10 @@ pub enum FunctionKind {
 impl FunctionKind {
     pub fn icon(&self) -> &'static str {
         match self {
-            FunctionKind::Function  => "ƒ",
-            FunctionKind::Procedure => "⚙",
-            FunctionKind::Aggregate => "∑",
-            FunctionKind::Window    => "⊞",
+            FunctionKind::Function  => egui_phosphor::regular::FUNCTION,
+            FunctionKind::Procedure => egui_phosphor::regular::GEAR,
+            FunctionKind::Aggregate => egui_phosphor::regular::SIGMA,
+            FunctionKind::Window    => egui_phosphor::regular::SQUARES_FOUR,
         }
     }
     pub fn label(&self) -> &'static str {

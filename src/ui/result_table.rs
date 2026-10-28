@@ -4,6 +4,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::db::query::{CellValue, QueryResult};
 use crate::i18n::I18n;
+use crate::ui::theme::{self as theme, icon};
 
 const DEFAULT_NULL_COLOR: egui::Color32 = egui::Color32::from_rgb(128, 100, 100);
 const NULL_LABEL: &str = "<null>";
@@ -128,17 +129,24 @@ impl<'a> ResultTable<'a> {
             Some(search.to_lowercase())
         };
 
+        // Row-number gutter sized to the largest index; a trailing filler column
+        // takes the remaining width so stripes and header span the whole panel.
+        let digits = display_indices.len().max(1).to_string().len() as f32;
+        let gutter_w = (digits * 7.5 + 14.0).max(32.0);
+
         let mut builder = TableBuilder::new(ui)
             .id_source(col_id)
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .min_scrolled_height(0.0);
+            .min_scrolled_height(0.0)
+            .column(Column::exact(gutter_w).resizable(false));
 
         for i in 0..col_count {
             let w = self.col_widths.get(i).copied().unwrap_or(uniform_col_width);
             builder = builder.column(Column::initial(w).resizable(true));
         }
+        builder = builder.column(Column::remainder().resizable(false));
 
         // ── Extract fields needed inside closures ─────────────────────────────
         // Copy/clone to avoid capturing `self` by &mut inside the closures,
@@ -174,16 +182,31 @@ impl<'a> ResultTable<'a> {
         let mut duplicate_row_requested: Option<usize> = None;
 
         builder
-            .header(24.0, |mut header| {
+            .header(28.0, |mut header| {
+                header.col(|ui| {
+                    theme::grid_header_bg(ui);
+                    ui.label(egui::RichText::new("#").small().color(theme::TEXT_FAINT));
+                });
                 for (i, col_name) in self.result.columns.iter().enumerate() {
                     header.col(|ui| {
-                        let label = match (sort_col == Some(i), sort_asc) {
-                            (true, true) => format!("{col_name} ▲"),
-                            (true, false) => format!("{col_name} ▼"),
-                            _ => col_name.clone(),
-                        };
+                        theme::grid_header_bg(ui);
+                        let mut text = egui::text::LayoutJob::default();
+                        text.append(
+                            col_name,
+                            0.0,
+                            egui::TextFormat::simple(egui::FontId::proportional(13.0), theme::TEXT),
+                        );
+                        if sort_col == Some(i) {
+                            let glyph = if sort_asc { icon::ARROW_UP } else { icon::ARROW_DOWN };
+                            text.append(
+                                glyph,
+                                5.0,
+                                egui::TextFormat::simple(egui::FontId::proportional(12.0), theme::ACCENT),
+                            );
+                        }
                         let resp = ui.add(
-                            egui::Label::new(egui::RichText::new(label).strong())
+                            egui::Label::new(text)
+                                .truncate()
                                 .sense(egui::Sense::click()),
                         );
                         if resp.clicked() {
@@ -192,16 +215,17 @@ impl<'a> ResultTable<'a> {
                         }
                         let col_i = i;
                         resp.context_menu(|ui| {
-                            if ui.button("📊 Statistics").clicked() {
+                            if ui.button(i18n.col_stats_menu_item()).clicked() {
                                 col_stats_requested = Some(col_i);
                                 ui.close_menu();
                             }
                         });
                     });
                 }
+                header.col(|ui| theme::grid_header_bg(ui));
             })
             .body(|body| {
-                body.rows(20.0, display_indices.len(), |mut row| {
+                body.rows(22.0, display_indices.len(), |mut row| {
                     let display_idx = row.index();
                     let actual_idx = display_indices[display_idx]; // caller-managed, no per-frame alloc
                     let row_data = &self.result.rows[actual_idx];
@@ -209,6 +233,17 @@ impl<'a> ResultTable<'a> {
                     row.set_selected(
                         selected_row == Some(display_idx) || selected_rows.contains(&actual_idx),
                     );
+
+                    row.col(|ui| {
+                        theme::grid_col_rule(ui);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new((display_idx + 1).to_string())
+                                    .size(11.0)
+                                    .color(theme::TEXT_FAINT),
+                            );
+                        });
+                    });
 
                     for (col_idx, cell) in row_data.iter().enumerate() {
                         let is_editing =
@@ -237,6 +272,7 @@ impl<'a> ResultTable<'a> {
                                     }
                                 }
                             } else {
+                                theme::grid_col_rule(ui);
                                 let full_rect = ui.available_rect_before_wrap();
                                 let cell_str = cell.to_string();
                                 let is_null = matches!(cell, crate::db::query::CellValue::Null);
@@ -340,6 +376,7 @@ impl<'a> ResultTable<'a> {
                             }
                         });
                     }
+                    row.col(|_| {});
                 });
             });
 
@@ -426,10 +463,19 @@ fn render_cell(ui: &mut egui::Ui, cell: &CellValue, null_color: egui::Color32) {
             ));
         }
         CellValue::Boolean(true) => {
-            ui.label(egui::RichText::new("true").color(egui::Color32::GREEN));
+            ui.label(egui::RichText::new("true").color(theme::SUCCESS));
         }
         CellValue::Boolean(false) => {
-            ui.label(egui::RichText::new("false").color(egui::Color32::RED));
+            ui.label(egui::RichText::new("false").color(theme::DANGER));
+        }
+        CellValue::Integer(_) | CellValue::Float(_) => {
+            // Numbers right-aligned so magnitudes line up, Darcula number colour.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(cell.to_string()).color(theme::NUMBER))
+                        .truncate(),
+                );
+            });
         }
         CellValue::Text(s) if crate::ui::syntax::looks_like_json(s) => {
             // Just a visual hint here — full pretty-print happens in the "View

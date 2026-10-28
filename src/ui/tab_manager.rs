@@ -1,3 +1,4 @@
+use crate::ui::theme::{self as theme, icon};
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
@@ -141,7 +142,7 @@ impl TabManager {
             self.next_id += 1;
             self.tabs.push(Tab {
                 id,
-                title: "📊 Dashboard".to_owned(),
+                title: "Dashboard".to_owned(),
                 content: TabContent::Dashboard,
                 conn_id,
             });
@@ -163,7 +164,7 @@ impl TabManager {
         self.next_id += 1;
         self.tabs.push(Tab {
             id,
-            title: format!("📐 {schema}"),
+            title: schema.clone(),
             content: TabContent::ErDiagram(ErDiagram::start_loading(schema)),
             conn_id,
         });
@@ -724,14 +725,7 @@ impl TabManager {
                         }
                     }
                 } else {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
-                        ui.label(
-                            egui::RichText::new(i18n.lbl_no_connection_available())
-                                .color(egui::Color32::GRAY)
-                                .italics(),
-                        );
-                    });
+                    theme::empty_state(ui, icon::PLUGS, i18n.lbl_no_connection_available(), "");
                 }
             }
         }
@@ -753,15 +747,22 @@ impl TabManager {
         let tab_count = self.tabs.len();
 
         // Pre-compute display data (including stable id) to avoid capturing `self` in closures.
-        // Tuple: (tab_idx, tab_id, title, is_active, is_running, is_dashboard, conn_id)
-        let tab_data: Vec<(usize, usize, String, bool, bool, bool, usize)> = self
+        // Tuple: (tab_idx, tab_id, title, is_active, is_running, is_dashboard, conn_id, glyph)
+        let tab_data: Vec<(usize, usize, String, bool, bool, bool, usize, &'static str)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
                 let is_running = self.running_tabs.values().any(|&rt| rt == i);
                 let is_dashboard = matches!(t.content, TabContent::Dashboard | TabContent::ErDiagram(_));
-                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard, t.conn_id)
+                let glyph = match &t.content {
+                    TabContent::Query(p) if p.is_browsing() => icon::TABLE,
+                    TabContent::Query(_) => icon::FILE_SQL,
+                    TabContent::Dashboard => icon::GAUGE,
+                    TabContent::ErDiagram(_) => icon::GRAPH,
+                    TabContent::SchemaDiff(_) => icon::GIT_DIFF,
+                };
+                (i, t.id, t.title.clone(), i == self.active, is_running, is_dashboard, t.conn_id, glyph)
             })
             .collect();
 
@@ -794,13 +795,13 @@ impl TabManager {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 1.0;
 
-            for (i, tab_id, title, is_active, is_running, is_dashboard, tab_conn_id) in &tab_data {
+            for (i, tab_id, title, is_active, is_running, is_dashboard, tab_conn_id, glyph) in &tab_data {
                 // Truncate long titles.
                 let short: String = truncate(title, 20);
                 let display = if *is_running {
-                    format!("⏳ {short}")
+                    format!("{}  {short}", icon::HOURGLASS)
                 } else {
-                    short
+                    format!("{glyph}  {short}")
                 };
 
                 // Read hover state saved from previous frame so the bg is set
@@ -810,22 +811,23 @@ impl TabManager {
                     ui.ctx().data(|d| d.get_temp(hover_id).unwrap_or(false));
 
                 let text_color = if *is_active {
-                    Color32::from_rgb(220, 220, 220)
+                    theme::TEXT
                 } else if was_hovered {
-                    Color32::from_rgb(210, 215, 225)
+                    theme::TEXT
                 } else {
-                    Color32::from_gray(140)
+                    theme::TEXT_MUTED
                 };
                 let bg = if *is_active {
-                    Color32::from_rgb(32, 36, 46)
+                    theme::SURFACE
                 } else if was_hovered {
-                    Color32::from_rgb(38, 52, 78)
+                    theme::SURFACE_RAISED
                 } else {
                     Color32::TRANSPARENT
                 };
 
                 let r = egui::Frame::none()
                     .fill(bg)
+                    .rounding(egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 })
                     .inner_margin(egui::Margin {
                         left: 10.0,
                         right: 6.0,
@@ -880,9 +882,9 @@ impl TabManager {
                             if tab_count > 1 {
                                 let xr = ui.add(
                                     egui::Button::new(
-                                        RichText::new("×")
-                                            .size(12.0)
-                                            .color(Color32::from_gray(120)),
+                                        RichText::new(icon::X)
+                                            .size(11.0)
+                                            .color(theme::TEXT_FAINT),
                                     )
                                     .frame(false)
                                     .min_size(egui::Vec2::splat(14.0)),
@@ -918,7 +920,7 @@ impl TabManager {
                     painter.hline(
                         tab_rect.x_range(),
                         tab_rect.bottom() - 1.0,
-                        egui::Stroke::new(2.0, Color32::from_rgb(86, 156, 214)),
+                        egui::Stroke::new(2.0, theme::ACCENT),
                     );
                 }
             }
@@ -928,7 +930,7 @@ impl TabManager {
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new("+").size(14.0).color(Color32::from_gray(160)),
+                        RichText::new(icon::PLUS).size(14.0).color(theme::TEXT_MUTED),
                     )
                     .frame(false)
                     .min_size(egui::Vec2::new(26.0, 26.0)),

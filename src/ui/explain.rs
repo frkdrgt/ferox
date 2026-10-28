@@ -466,15 +466,13 @@ fn render_bar(ui: &mut egui::Ui, ratio: f32, color: Color32) {
 
     let painter = ui.painter();
     // Background
-    painter.rect_filled(rect, 0.0, Color32::from_gray(40));
+    painter.rect_filled(rect, 3.0, crate::ui::theme::SURFACE_RAISED);
     // Filled portion
     let fill_rect = egui::Rect::from_min_size(
         rect.min,
         egui::vec2(rect.width() * ratio, rect.height()),
     );
-    painter.rect_filled(fill_rect, 0.0, color.linear_multiply(0.8));
-    // Border
-    painter.rect_stroke(rect, 0.0, Stroke::new(0.5, Color32::from_gray(80)));
+    painter.rect_filled(fill_rect, 3.0, color.linear_multiply(0.8));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

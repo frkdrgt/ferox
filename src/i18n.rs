@@ -10,6 +10,9 @@ pub enum Lang {
 }
 
 /// Lightweight i18n helper — zero allocations for static strings.
+///
+/// `\u{E…}` escapes in labels are Phosphor icon codepoints (see
+/// `egui_phosphor::regular`, installed by `ui::theme::install_fonts`).
 #[derive(Debug, Clone, Copy)]
 pub struct I18n(pub Lang);
 
@@ -35,11 +38,11 @@ impl I18n {
     // ── Menu — Query ─────────────────────────────────────────────────────────
 
     pub fn menu_query(&self) -> &'static str { self.t("Query", "Sorgu") }
-    pub fn menu_safe_mode(&self) -> &'static str { self.t("🛡 Safe Mode", "🛡 Güvenli Mod") }
-    pub fn menu_safe_mode_on(&self) -> &'static str { self.t("🛡 Safe Mode  ✓", "🛡 Güvenli Mod  ✓") }
+    pub fn menu_safe_mode(&self) -> &'static str { self.t("\u{E40C} Safe Mode", "\u{E40C} Güvenli Mod") }
+    pub fn menu_safe_mode_on(&self) -> &'static str { self.t("\u{E40C} Safe Mode  \u{E182}", "\u{E40C} Güvenli Mod  \u{E182}") }
     pub fn menu_join_builder(&self) -> &'static str { self.t("Join Builder…", "Join Oluşturucu…") }
-    pub fn menu_dashboard(&self) -> &'static str { self.t("📊 Dashboard", "📊 Gösterge Paneli") }
-    pub fn menu_schema_diff(&self) -> &'static str { self.t("⊕ Schema Diff", "⊕ Şema Karşılaştırma") }
+    pub fn menu_dashboard(&self) -> &'static str { self.t("\u{E628} Dashboard", "\u{E628} Gösterge Paneli") }
+    pub fn menu_schema_diff(&self) -> &'static str { self.t("\u{E27C} Schema Diff", "\u{E27C} Şema Karşılaştırma") }
     pub fn menu_execute(&self) -> &'static str { self.t("Execute (F5 / Ctrl+Enter)", "Çalıştır (F5 / Ctrl+Enter)") }
     pub fn menu_cancel(&self) -> &'static str { self.t("Cancel (Ctrl+C)", "İptal (Ctrl+C)") }
     pub fn menu_export_csv(&self) -> &'static str { self.t("Export as CSV…", "CSV olarak Dışa Aktar…") }
@@ -48,12 +51,12 @@ impl I18n {
 
     // ── Status bar ────────────────────────────────────────────────────────────
 
-    pub fn status_disconnected(&self) -> &'static str { self.t("⬤  Disconnected", "⬤  Bağlı Değil") }
-    pub fn status_connecting(&self) -> &'static str { self.t("⬤  Connecting…", "⬤  Bağlanıyor…") }
+    pub fn status_disconnected(&self) -> &'static str { self.t("●  Disconnected", "●  Bağlı Değil") }
+    pub fn status_connecting(&self) -> &'static str { self.t("●  Connecting…", "●  Bağlanıyor…") }
     pub fn status_error(&self, msg: &str) -> String {
         match self.0 {
-            Lang::En => format!("⬤  Error: {msg}"),
-            Lang::Tr => format!("⬤  Hata: {msg}"),
+            Lang::En => format!("●  Error: {msg}"),
+            Lang::Tr => format!("●  Hata: {msg}"),
         }
     }
     pub fn status_rows(&self, n: usize) -> String {
@@ -77,8 +80,8 @@ impl I18n {
             "🛡 Güvenli Mod AÇIK — DML ifadeleri otomatik olarak BEGIN ile sarılacak.",
         )
     }
-    pub fn btn_commit(&self) -> &'static str { self.t("✓  COMMIT", "✓  ONAYLA") }
-    pub fn btn_rollback(&self) -> &'static str { self.t("✕  ROLLBACK", "✕  GERİ AL") }
+    pub fn btn_commit(&self) -> &'static str { self.t("\u{E182}  COMMIT", "\u{E182}  ONAYLA") }
+    pub fn btn_rollback(&self) -> &'static str { self.t("\u{E4F6}  ROLLBACK", "\u{E4F6}  GERİ AL") }
 
     // ── App general ───────────────────────────────────────────────────────────
 
@@ -134,23 +137,23 @@ impl I18n {
 
     // ── Query panel — toolbar ─────────────────────────────────────────────────
 
-    pub fn btn_run(&self) -> &'static str { self.t("▶ Run", "▶ Çalıştır") }
-    pub fn btn_running(&self) -> &'static str { self.t("⏳ Running…", "⏳ Çalışıyor…") }
-    pub fn btn_cancel_query(&self) -> &'static str { self.t("■ Cancel", "■ İptal") }
-    pub fn btn_explain(&self) -> &'static str { self.t("⚡ Explain", "⚡ Açıkla") }
+    pub fn btn_run(&self) -> &'static str { self.t("\u{E3D0} Run", "\u{E3D0} Çalıştır") }
+    pub fn btn_running(&self) -> &'static str { self.t("\u{E2B2} Running…", "\u{E2B2} Çalışıyor…") }
+    pub fn btn_cancel_query(&self) -> &'static str { self.t("\u{E46C} Cancel", "\u{E46C} İptal") }
+    pub fn btn_explain(&self) -> &'static str { self.t("\u{E67C} Explain", "\u{E67C} Açıkla") }
     pub fn hover_explain(&self) -> &'static str {
         self.t("Run EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)", "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) çalıştır")
     }
-    pub fn btn_hist_prev(&self) -> &'static str { self.t("⬆ Hist", "⬆ Geçmiş") }
+    pub fn btn_hist_prev(&self) -> &'static str { self.t("\u{E1A0} Hist", "\u{E1A0} Geçmiş") }
     pub fn hover_hist_prev(&self) -> &'static str { self.t("Previous query (↑)", "Önceki sorgu (↑)") }
     pub fn hover_hist_next(&self) -> &'static str { self.t("Next query (↓)", "Sonraki sorgu (↓)") }
-    pub fn btn_format(&self) -> &'static str { self.t("⇄ Format", "⇄ Biçimle") }
+    pub fn btn_format(&self) -> &'static str { self.t("\u{EA1E} Format", "\u{EA1E} Biçimle") }
     pub fn hover_format(&self) -> &'static str {
         self.t("Format SQL (Shift+Alt+F)", "SQL'i biçimle (Shift+Alt+F)")
     }
     pub fn hover_export_csv(&self) -> &'static str { self.t("Export as CSV…", "CSV olarak dışa aktar…") }
     pub fn hover_export_json(&self) -> &'static str { self.t("Export as JSON…", "JSON olarak dışa aktar…") }
-    pub fn btn_run_file(&self) -> &'static str { self.t("📂 Run File", "📂 Dosya Çalıştır") }
+    pub fn btn_run_file(&self) -> &'static str { self.t("\u{E61E} Run File", "\u{E61E} Dosya Çalıştır") }
     pub fn hover_run_file(&self) -> &'static str {
         self.t(
             "Execute a SQL file directly without loading it into the editor",
@@ -169,7 +172,7 @@ impl I18n {
     pub fn tab_results(&self) -> &'static str { self.t("Results", "Sonuçlar") }
     pub fn tab_history(&self) -> &'static str { self.t("History", "Geçmiş") }
     pub fn tab_saved(&self) -> &'static str { self.t("Saved", "Kayıtlı") }
-    pub fn tab_plan(&self) -> &'static str { self.t("⚡ Plan", "⚡ Plan") }
+    pub fn tab_plan(&self) -> &'static str { self.t("\u{E67C} Plan", "\u{E67C} Plan") }
     pub fn tab_messages(&self) -> &'static str { self.t("Messages", "Mesajlar") }
     pub fn tab_messages_n(&self, n: usize) -> String {
         match self.0 {
@@ -180,11 +183,11 @@ impl I18n {
 
     // ── Saved queries / snippets ──────────────────────────────────────────────
 
-    pub fn btn_save_snippet(&self) -> &'static str { self.t("💾 Save", "💾 Kaydet") }
+    pub fn btn_save_snippet(&self) -> &'static str { self.t("\u{E248} Save", "\u{E248} Kaydet") }
     pub fn hover_save_snippet(&self) -> &'static str {
         self.t("Save query with a name (Ctrl+Shift+S)", "Sorguyu isimle kaydet (Ctrl+Shift+S)")
     }
-    pub fn dlg_save_query(&self) -> &'static str { self.t("💾 Save Query", "💾 Sorguyu Kaydet") }
+    pub fn dlg_save_query(&self) -> &'static str { self.t("\u{E248} Save Query", "\u{E248} Sorguyu Kaydet") }
     pub fn lbl_snippet_name(&self) -> &'static str { self.t("Name:", "İsim:") }
     pub fn btn_save(&self) -> &'static str { self.t("Save", "Kaydet") }
     pub fn snippet_overwrite_warn(&self) -> &'static str {
@@ -193,8 +196,8 @@ impl I18n {
             "⚠ Bu isimde bir kayıt var — üzerine yazılacak.",
         )
     }
-    pub fn snippet_ctx_load(&self) -> &'static str { self.t("📋  Load into editor", "📋  Editöre yükle") }
-    pub fn snippet_ctx_delete(&self) -> &'static str { self.t("🗑  Delete", "🗑  Sil") }
+    pub fn snippet_ctx_load(&self) -> &'static str { self.t("\u{E1CA}  Load into editor", "\u{E1CA}  Editöre yükle") }
+    pub fn snippet_ctx_delete(&self) -> &'static str { self.t("\u{E4A6}  Delete", "\u{E4A6}  Sil") }
     pub fn snippets_empty_hint(&self) -> &'static str {
         self.t(
             "No saved queries yet — press Ctrl+Shift+S to save the current query.",
@@ -212,15 +215,15 @@ impl I18n {
 
     pub fn browse_prefix(&self) -> &'static str { self.t("Browse:", "Göz At:") }
     pub fn browse_sorted_by(&self) -> &'static str { self.t("sorted by", "sıralama:") }
-    pub fn btn_exit_browse(&self) -> &'static str { self.t("✕ Exit browse", "✕ Göz atmayı kapat") }
-    pub fn filter_hint(&self) -> &'static str { self.t("🔍 Filter results…", "🔍 Sonuçları filtrele…") }
+    pub fn btn_exit_browse(&self) -> &'static str { self.t("\u{E4F6} Exit browse", "\u{E4F6} Göz atmayı kapat") }
+    pub fn filter_hint(&self) -> &'static str { self.t("\u{E266} Filter results…", "\u{E266} Sonuçları filtrele…") }
     pub fn label_search(&self) -> &'static str { self.t("Search:", "Ara:") }
     pub fn lbl_running(&self) -> &'static str { self.t("Running…", "Çalışıyor…") }
     pub fn lbl_running_explain(&self) -> &'static str { self.t("Running EXPLAIN…", "EXPLAIN çalıştırılıyor…") }
     pub fn lbl_no_results_yet(&self) -> &'static str {
         self.t(
-            "No results yet. Run a query with F5 or Ctrl+Enter.",
-            "Henüz sonuç yok. F5 veya Ctrl+Enter ile sorgu çalıştırın.",
+            "No results yet",
+            "Henüz sonuç yok",
         )
     }
     pub fn lbl_no_messages(&self) -> &'static str {
@@ -347,7 +350,7 @@ impl I18n {
     // ── Sidebar ───────────────────────────────────────────────────────────────
 
     pub fn schema_browser(&self) -> &'static str { self.t("SCHEMA BROWSER", "ŞEMA TARAYICISI") }
-    pub fn sidebar_filter_hint(&self) -> &'static str { self.t("🔍  Filter…", "🔍  Filtrele…") }
+    pub fn sidebar_filter_hint(&self) -> &'static str { self.t("\u{E30C}  Filter…", "\u{E30C}  Filtrele…") }
     pub fn kind_tables(&self) -> &'static str { self.t("TABLES", "TABLOLAR") }
     pub fn kind_views(&self) -> &'static str { self.t("VIEWS", "GÖRÜNÜMLER") }
     pub fn kind_mat_views(&self) -> &'static str { self.t("MAT VIEWS", "MAT GÖRÜNÜMLER") }
@@ -390,13 +393,13 @@ impl I18n {
     pub fn hover_add_filter(&self) -> &'static str {
         self.t("Append this condition to the WHERE filter above", "Bu koşulu yukarıdaki WHERE filtresine ekle")
     }
-    pub fn schema_menu_new_table(&self) -> &'static str { self.t("＋  New Table…", "＋  Yeni Tablo…") }
-    pub fn schema_menu_er(&self) -> &'static str { self.t("📐  View ER Diagram", "📐  ER Diyagramını Gör") }
-    pub fn schema_menu_refresh(&self) -> &'static str { self.t("↺  Refresh", "↺  Yenile") }
-    pub fn table_menu_generate_script(&self) -> &'static str { self.t("📄  Generate Script", "📄  Script Oluştur") }
-    pub fn table_menu_browse(&self) -> &'static str { self.t("▶  Browse rows", "▶  Satırlara Gözat") }
-    pub fn table_menu_edit(&self) -> &'static str { self.t("✎  Edit Table…", "✎  Tabloyu Düzenle…") }
-    pub fn table_menu_import_csv(&self) -> &'static str { self.t("⇩  Import CSV…", "⇩  CSV İçe Aktar…") }
+    pub fn schema_menu_new_table(&self) -> &'static str { self.t("\u{E3D4}  New Table…", "\u{E3D4}  Yeni Tablo…") }
+    pub fn schema_menu_er(&self) -> &'static str { self.t("\u{EB58}  View ER Diagram", "\u{EB58}  ER Diyagramını Gör") }
+    pub fn schema_menu_refresh(&self) -> &'static str { self.t("\u{E094}  Refresh", "\u{E094}  Yenile") }
+    pub fn table_menu_generate_script(&self) -> &'static str { self.t("\u{E914}  Generate Script", "\u{E914}  Script Oluştur") }
+    pub fn table_menu_browse(&self) -> &'static str { self.t("\u{E476}  Browse rows", "\u{E476}  Satırlara Gözat") }
+    pub fn table_menu_edit(&self) -> &'static str { self.t("\u{E3B4}  Edit Table…", "\u{E3B4}  Tabloyu Düzenle…") }
+    pub fn table_menu_import_csv(&self) -> &'static str { self.t("\u{E20C}  Import CSV…", "\u{E20C}  CSV İçe Aktar…") }
     pub fn import_csv_title(&self) -> &'static str { self.t("Import CSV", "CSV İçe Aktar") }
     pub fn import_csv_detected_cols(&self) -> &'static str { self.t("Detected columns (from CSV header):", "Algılanan kolonlar (CSV başlığından):") }
     pub fn btn_import(&self) -> &'static str { self.t("Import", "İçe Aktar") }
@@ -408,10 +411,10 @@ impl I18n {
         }
     }
     pub fn table_menu_show_ddl(&self) -> &'static str { self.t("{}  Show DDL", "{}  DDL Göster") }
-    pub fn table_menu_count(&self) -> &'static str { self.t("∑  Count rows", "∑  Satır Say") }
-    pub fn table_menu_show_cols(&self) -> &'static str { self.t("≡  Show columns", "≡  Sütunları Göster") }
-    pub fn table_menu_show_indexes(&self) -> &'static str { self.t("⊟  Show indexes", "⊟  İndeksleri Göster") }
-    pub fn table_menu_show_fks(&self) -> &'static str { self.t("⊠  Show foreign keys", "⊠  Yabancı Anahtarları Göster") }
+    pub fn table_menu_count(&self) -> &'static str { self.t("\u{EAB8}  Count rows", "\u{EAB8}  Satır Say") }
+    pub fn table_menu_show_cols(&self) -> &'static str { self.t("\u{E546}  Show columns", "\u{E546}  Sütunları Göster") }
+    pub fn table_menu_show_indexes(&self) -> &'static str { self.t("\u{E2F6}  Show indexes", "\u{E2F6}  İndeksleri Göster") }
+    pub fn table_menu_show_fks(&self) -> &'static str { self.t("\u{E2D6}  Show foreign keys", "\u{E2D6}  Yabancı Anahtarları Göster") }
     pub fn lbl_not_connected_sidebar(&self) -> &'static str { self.t("Not connected", "Bağlı değil") }
 
     // ── Tab manager ───────────────────────────────────────────────────────────
@@ -425,7 +428,23 @@ impl I18n {
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
 
-    pub fn btn_refresh(&self) -> &'static str { self.t("↺ Refresh", "↺ Yenile") }
+    pub fn sidebar_counts(&self, schemas: usize, tables: usize) -> String {
+        match self.0 {
+            Lang::En => format!("{schemas} schemas · {tables} tables loaded"),
+            Lang::Tr => format!("{schemas} şema · {tables} tablo yüklü"),
+        }
+    }
+    pub fn tb_new_connection(&self) -> &'static str { self.t("Connection", "Bağlantı") }
+    pub fn tb_new_query(&self) -> &'static str { self.t("New Query", "Yeni Sorgu") }
+    pub fn tb_dashboard(&self) -> &'static str { self.t("Dashboard", "Gösterge") }
+    pub fn tb_join_builder(&self) -> &'static str { self.t("Join Builder", "Join") }
+    pub fn tb_schema_diff(&self) -> &'static str { self.t("Schema Diff", "Şema Farkı") }
+    pub fn tb_safe_mode(&self) -> &'static str { self.t("Safe Mode", "Güvenli Mod") }
+    pub fn dash_card_tables(&self) -> &'static str { self.t("Tables", "Tablolar") }
+    pub fn dash_card_total_size(&self) -> &'static str { self.t("Total size", "Toplam boyut") }
+    pub fn dash_card_connections(&self) -> &'static str { self.t("Active / all connections", "Aktif / tüm bağlantılar") }
+    pub fn dash_card_unused_indexes(&self) -> &'static str { self.t("Unused / all indexes", "Kullanılmayan / tüm indeksler") }
+    pub fn btn_refresh(&self) -> &'static str { self.t("\u{E094} Refresh", "\u{E094} Yenile") }
     pub fn dash_tab_table_sizes(&self) -> &'static str { self.t("Table Sizes", "Tablo Boyutları") }
     pub fn dash_tab_connections(&self) -> &'static str { self.t("Connections", "Bağlantılar") }
     pub fn dash_tab_index_stats(&self) -> &'static str { self.t("Index Stats", "İndeks İstatistikleri") }
@@ -494,10 +513,10 @@ impl I18n {
             "Nested Loop büyük veri setinde çalışıyor — Hash Join daha verimli olabilir",
         )
     }
-    pub fn lbl_suggestions(&self) -> &'static str { self.t("⚡ Suggestions", "⚡ Öneriler") }
+    pub fn lbl_suggestions(&self) -> &'static str { self.t("\u{E2DE} Suggestions", "\u{E2DE} Öneriler") }
     pub fn lbl_planning(&self) -> &'static str { self.t("Planning:", "Planlama:") }
     pub fn lbl_execution(&self) -> &'static str { self.t("Execution:", "Çalışma:") }
-    pub fn lbl_slowest_node(&self) -> &'static str { self.t("🐢 Slowest Node", "🐢 En Yavaş Node") }
+    pub fn lbl_slowest_node(&self) -> &'static str { self.t("\u{E492} Slowest Node", "\u{E492} En Yavaş Node") }
 
     // ── ER Diagram ────────────────────────────────────────────────────────────
 
@@ -532,9 +551,9 @@ impl I18n {
     pub fn jb_hint_add_tables(&self) -> &'static str {
         self.t("Add at least 2 tables above.", "Yukarıdan en az 2 tablo ekleyin.")
     }
-    pub fn jb_btn_add_table(&self) -> &'static str { self.t("＋  Add Table", "＋  Tablo Ekle") }
+    pub fn jb_btn_add_table(&self) -> &'static str { self.t("\u{E3D4}  Add Table", "\u{E3D4}  Tablo Ekle") }
     pub fn jb_btn_add_condition(&self) -> &'static str {
-        self.t("＋  Add Join Condition", "＋  Join Koşulu Ekle")
+        self.t("\u{E3D4}  Add Join Condition", "\u{E3D4}  Join Koşulu Ekle")
     }
     pub fn jb_loading_cols(&self) -> &'static str { self.t("(⟳ loading…)", "(⟳ yükleniyor…)") }
     pub fn jb_n_cols(&self, n: usize) -> String {
@@ -543,13 +562,13 @@ impl I18n {
             Lang::Tr => format!("({n} sütun)"),
         }
     }
-    pub fn jb_btn_run(&self) -> &'static str { self.t("▶  Run", "▶  Çalıştır") }
+    pub fn jb_btn_run(&self) -> &'static str { self.t("\u{E3D0}  Run", "\u{E3D0}  Çalıştır") }
     pub fn jb_hover_run(&self) -> &'static str { self.t("Execute and show results", "Çalıştır ve sonuçları göster") }
-    pub fn jb_btn_send_editor(&self) -> &'static str { self.t("✎  Send to Editor", "✎  Editöre Gönder") }
+    pub fn jb_btn_send_editor(&self) -> &'static str { self.t("\u{E3B4}  Send to Editor", "\u{E3B4}  Editöre Gönder") }
     pub fn jb_hover_send_editor(&self) -> &'static str {
         self.t("Paste SQL into the active query tab", "SQL'i aktif sorgu sekmesine yapıştır")
     }
-    pub fn jb_btn_reset(&self) -> &'static str { self.t("↺  Reset", "↺  Sıfırla") }
+    pub fn jb_btn_reset(&self) -> &'static str { self.t("\u{E094}  Reset", "\u{E094}  Sıfırla") }
     pub fn jb_hover_reset(&self) -> &'static str { self.t("Clear all", "Hepsini temizle") }
 
     // ── Table dialog ──────────────────────────────────────────────────────────
@@ -667,7 +686,7 @@ impl I18n {
 
     // ── Column Statistics ─────────────────────────────────────────────────────
 
-    pub fn col_stats_menu_item(&self) -> &'static str { self.t("📊 Statistics", "📊 İstatistikler") }
+    pub fn col_stats_menu_item(&self) -> &'static str { self.t("\u{E150} Statistics", "\u{E150} İstatistikler") }
     pub fn col_stats_title(&self, col: &str) -> String {
         match self.0 {
             Lang::En => format!("Column: {col}"),
@@ -692,7 +711,7 @@ impl I18n {
 
     // ── Run selection / INSERT export ─────────────────────────────────────────
 
-    pub fn btn_run_selection(&self) -> &'static str { self.t("▶ Run Selection", "▶ Seçimi Çalıştır") }
+    pub fn btn_run_selection(&self) -> &'static str { self.t("\u{E3D0} Run Selection", "\u{E3D0} Seçimi Çalıştır") }
     pub fn hover_export_insert(&self) -> &'static str {
         self.t("Export as INSERT statements…", "INSERT ifadeleri olarak dışa aktar…")
     }
@@ -703,10 +722,10 @@ impl I18n {
     // ── Schema dump ───────────────────────────────────────────────────────────
 
     pub fn schema_menu_dump_full(&self) -> &'static str {
-        self.t("💾  Dump schema (structure + data)…", "💾  Şemayı dök (yapı + veri)…")
+        self.t("\u{E20C}  Dump schema (structure + data)…", "\u{E20C}  Şemayı dök (yapı + veri)…")
     }
     pub fn schema_menu_dump_structure(&self) -> &'static str {
-        self.t("💾  Dump schema (structure only)…", "💾  Şemayı dök (sadece yapı)…")
+        self.t("\u{E20C}  Dump schema (structure only)…", "\u{E20C}  Şemayı dök (sadece yapı)…")
     }
     pub fn log_dump_started(&self, schema: &str) -> String {
         match self.0 {
@@ -731,7 +750,7 @@ impl I18n {
 
     pub fn ai_menu_explain(&self) -> &'static str { self.t("Explain query", "Sorguyu açıkla") }
     pub fn ai_menu_optimize(&self) -> &'static str { self.t("Optimize query", "Sorguyu optimize et") }
-    pub fn ai_menu_fix(&self) -> &'static str { self.t("✦ Fix error with AI", "✦ Hatayı AI ile düzelt") }
+    pub fn ai_menu_fix(&self) -> &'static str { self.t("\u{E6A2} Fix error with AI", "\u{E6A2} Hatayı AI ile düzelt") }
     pub fn ai_hover_fix_disabled(&self) -> &'static str {
         self.t("Available after a query fails", "Bir sorgu hata verdikten sonra kullanılabilir")
     }
@@ -741,9 +760,9 @@ impl I18n {
             "AI: sorguyu açıkla / optimize et / düzelt (varsa seçim)",
         )
     }
-    pub fn ai_title_explain(&self) -> &'static str { self.t("✦ AI — Explanation", "✦ AI — Açıklama") }
-    pub fn ai_title_optimize(&self) -> &'static str { self.t("✦ AI — Optimized query", "✦ AI — Optimize edilmiş sorgu") }
-    pub fn ai_title_fix(&self) -> &'static str { self.t("✦ AI — Fixed query", "✦ AI — Düzeltilmiş sorgu") }
+    pub fn ai_title_explain(&self) -> &'static str { self.t("\u{E6A2} AI — Explanation", "\u{E6A2} AI — Açıklama") }
+    pub fn ai_title_optimize(&self) -> &'static str { self.t("\u{E6A2} AI — Optimized query", "\u{E6A2} AI — Optimize edilmiş sorgu") }
+    pub fn ai_title_fix(&self) -> &'static str { self.t("\u{E6A2} AI — Fixed query", "\u{E6A2} AI — Düzeltilmiş sorgu") }
     pub fn ai_warn_new_writes(&self, ops: &str) -> String {
         match self.0 {
             Lang::En => format!("⚠ The suggestion adds operations the original didn't have: {ops} — review before running."),
@@ -766,8 +785,8 @@ impl I18n {
     pub fn update_checking(&self) -> &'static str { self.t("Checking for updates…", "Güncellemeler denetleniyor…") }
     pub fn update_up_to_date(&self, current: &str) -> String {
         match self.0 {
-            Lang::En => format!("✓ ferox {current} is the latest version."),
-            Lang::Tr => format!("✓ ferox {current} en güncel sürüm."),
+            Lang::En => format!("\u{E182} ferox {current} is the latest version."),
+            Lang::Tr => format!("\u{E182} ferox {current} en güncel sürüm."),
         }
     }
     pub fn update_available(&self, latest: &str, current: &str) -> String {
@@ -813,4 +832,55 @@ impl I18n {
         }
     }
     pub fn dbeaver_choose_file(&self) -> &'static str { self.t("Choose file…", "Dosya seç…") }
+
+    // ── Home screen ───────────────────────────────────────────────────────────
+
+    pub fn home_tagline(&self) -> &'static str {
+        self.t("Lightweight PostgreSQL client", "Hafif PostgreSQL istemcisi")
+    }
+    pub fn home_saved_connections(&self) -> &'static str { self.t("Saved connections", "Kayıtlı bağlantılar") }
+    pub fn home_groups(&self) -> &'static str { self.t("Groups", "Gruplar") }
+    pub fn home_history_count(&self) -> &'static str { self.t("Queries in history", "Geçmişteki sorgular") }
+    pub fn home_saved_queries(&self) -> &'static str { self.t("Saved queries", "Kayıtlı sorgular") }
+    pub fn home_quick_start(&self) -> &'static str { self.t("Quick Start", "Hızlı Başlangıç") }
+    pub fn home_no_profiles(&self) -> &'static str {
+        self.t("No saved connections yet", "Henüz kayıtlı bağlantı yok")
+    }
+    pub fn home_no_profiles_hint(&self) -> &'static str {
+        self.t(
+            "Create one, or import your existing DBeaver connections.",
+            "Yeni bir tane oluşturun ya da DBeaver bağlantılarınızı içe aktarın.",
+        )
+    }
+    pub fn home_connect(&self) -> &'static str { self.t("Connect", "Bağlan") }
+    pub fn home_shortcuts(&self) -> &'static str { self.t("Shortcuts", "Kısayollar") }
+    pub fn home_recent_queries(&self) -> &'static str { self.t("Recent Queries", "Son Sorgular") }
+    pub fn home_no_history(&self) -> &'static str { self.t("No queries run yet", "Henüz sorgu çalıştırılmadı") }
+    pub fn home_copy_query(&self) -> &'static str { self.t("Click to copy", "Kopyalamak için tıklayın") }
+    pub fn home_ai_title(&self) -> &'static str { self.t("AI Assistant", "AI Asistanı") }
+    pub fn home_ai_on(&self, provider: &str, model: &str) -> String {
+        match self.0 {
+            Lang::En => format!("Enabled — {provider} / {model}. Use \u{E6A2} AI in the editor toolbar for NL→SQL, explain, optimize and fix."),
+            Lang::Tr => format!("Etkin — {provider} / {model}. NL→SQL, açıklama, optimizasyon ve hata düzeltme için editördeki \u{E6A2} AI'ı kullanın."),
+        }
+    }
+    pub fn home_ai_off(&self) -> &'static str {
+        self.t(
+            "Not configured. Add a Claude, OpenAI, Groq or Ollama key under Settings → AI to write SQL from plain language.",
+            "Yapılandırılmadı. Düz metinden SQL yazmak için Ayarlar → AI altından Claude, OpenAI, Groq veya Ollama anahtarı ekleyin.",
+        )
+    }
+    pub fn kb_run(&self) -> &'static str { self.t("Run query / selection", "Sorguyu / seçimi çalıştır") }
+    pub fn kb_new_tab(&self) -> &'static str { self.t("New tab", "Yeni sekme") }
+    pub fn kb_close_tab(&self) -> &'static str { self.t("Close tab", "Sekmeyi kapat") }
+    pub fn kb_find(&self) -> &'static str { self.t("Find in results", "Sonuçlarda ara") }
+    pub fn kb_save_query(&self) -> &'static str { self.t("Save query", "Sorguyu kaydet") }
+    pub fn kb_autocomplete(&self) -> &'static str { self.t("Autocomplete", "Otomatik tamamlama") }
+    pub fn kb_format(&self) -> &'static str { self.t("Format SQL", "SQL'i biçimle") }
+    pub fn sidebar_empty_hint(&self) -> &'static str {
+        self.t("Connect to browse schemas", "Şemalara göz atmak için bağlanın")
+    }
+    pub fn lbl_no_results_hint(&self) -> &'static str {
+        self.t("Press Ctrl+Enter or F5 to run", "Çalıştırmak için Ctrl+Enter veya F5")
+    }
 }

@@ -1,3 +1,4 @@
+use crate::ui::theme::{self as theme, icon};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -140,7 +141,7 @@ pub fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[Strin
             .join(",\n")
     };
     let where_clause = if pk.is_empty() {
-        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+        "    1=1  -- ⚠ replace with actual condition".to_owned()
     } else {
         pk.iter()
             .map(|p| {
@@ -155,7 +156,7 @@ pub fn script_update(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[Strin
 
 pub fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[String]) -> String {
     let where_clause = if pk.is_empty() {
-        "    1=1  -- ⚠️ replace with actual condition".to_owned()
+        "    1=1  -- ⚠ replace with actual condition".to_owned()
     } else {
         pk.iter()
             .map(|p| {
@@ -166,7 +167,7 @@ pub fn script_delete(schema: &str, table: &str, cols: &[ColumnInfo], pk: &[Strin
             .join("\n    AND ")
     };
     format!(
-        "-- ⚠️ Review WHERE clause carefully before running\nDELETE FROM \"{schema}\".\"{table}\"\nWHERE\n{where_clause};"
+        "-- ⚠ Review WHERE clause carefully before running\nDELETE FROM \"{schema}\".\"{table}\"\nWHERE\n{where_clause};"
     )
 }
 
@@ -178,6 +179,7 @@ const COLOR_MATVIEW: Color32 = Color32::from_rgb(220, 160, 60);
 const COLOR_FOREIGN: Color32 = Color32::from_rgb(78, 201, 176);
 const COLOR_SCHEMA: Color32 = Color32::from_rgb(206, 206, 206);
 const COLOR_SCHEMA_ARROW: Color32 = Color32::from_rgb(130, 130, 130);
+const COLOR_SCHEMA_ICON: Color32 = Color32::from_rgb(214, 175, 92); // folder amber
 const COLOR_KIND_HEADER: Color32 = Color32::from_rgb(80, 80, 80);
 const COLOR_SUBITEM: Color32 = Color32::from_rgb(150, 150, 150);
 const COLOR_INDEX: Color32 = Color32::from_rgb(100, 180, 100);
@@ -283,6 +285,11 @@ impl Sidebar {
     /// so the next expand / edit loads them fresh.
     pub fn invalidate_table_details(&mut self, schema: &str, table: &str) {
         self.table_details.remove(&(schema.to_owned(), table.to_owned()));
+    }
+
+    /// (schemas, loaded tables/views) — for the sidebar footer.
+    pub fn counts(&self) -> (usize, usize) {
+        (self.schemas.len(), self.tables.values().map(Vec::len).sum())
     }
 
     pub fn schema_names(&self) -> Vec<String> {
@@ -436,12 +443,15 @@ impl Sidebar {
         egui::Frame::none()
             .inner_margin(egui::Margin { left: 8.0, right: 8.0, top: 8.0, bottom: 4.0 })
             .show(ui, |ui| {
-                ui.label(
-                    RichText::new(i18n.schema_browser())
-                        .small()
-                        .strong()
-                        .color(Color32::from_gray(120)),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(icon::TREE_STRUCTURE).color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new(i18n.schema_browser())
+                            .small()
+                            .strong()
+                            .color(theme::TEXT_MUTED),
+                    );
+                });
                 ui.add_space(4.0);
 
                 let filter_resp = ui.add(
@@ -486,30 +496,37 @@ impl Sidebar {
 
                     // ── Schema header row ─────────────────────────────────
                     let schema_resp = {
-                        let arrow = if is_expanded { "▾" } else { "▸" };
+                        let arrow = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
                         let available_w = ui.available_width();
                         let (rect, resp) = ui.allocate_exact_size(
-                            Vec2::new(available_w, 22.0),
+                            Vec2::new(available_w, 24.0),
                             Sense::click(),
                         );
 
                         if ui.is_rect_visible(rect) {
                             let painter = ui.painter();
                             let bg = if resp.hovered() {
-                                Color32::from_rgb(65, 69, 73)
+                                theme::SURFACE_RAISED
                             } else {
                                 Color32::TRANSPARENT
                             };
-                            painter.rect_filled(rect, 2.0, bg);
+                            painter.rect_filled(rect, 4.0, bg);
                             painter.text(
                                 rect.left_center() + Vec2::new(6.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
                                 arrow,
-                                egui::FontId::proportional(10.0),
+                                egui::FontId::proportional(11.0),
                                 COLOR_SCHEMA_ARROW,
                             );
                             painter.text(
-                                rect.left_center() + Vec2::new(20.0, 0.0),
+                                rect.left_center() + Vec2::new(21.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                if is_expanded { icon::FOLDER_OPEN } else { icon::FOLDER_SIMPLE },
+                                egui::FontId::proportional(14.0),
+                                COLOR_SCHEMA_ICON,
+                            );
+                            painter.text(
+                                rect.left_center() + Vec2::new(40.0, 0.0),
                                 egui::Align2::LEFT_CENTER,
                                 &schema.name,
                                 egui::FontId::proportional(13.0),
@@ -519,18 +536,15 @@ impl Sidebar {
                                 painter.text(
                                     rect.right_center() + Vec2::new(-8.0, 0.0),
                                     egui::Align2::RIGHT_CENTER,
-                                    "↻",
+                                    icon::ARROWS_CLOCKWISE,
                                     egui::FontId::proportional(11.0),
                                     Color32::from_rgb(120, 160, 200),
                                 );
                             } else if filter.is_empty() && !tables.is_empty() {
-                                let badge = format!("{}", tables.len());
-                                painter.text(
-                                    rect.right_center() + Vec2::new(-8.0, 0.0),
-                                    egui::Align2::RIGHT_CENTER,
-                                    &badge,
-                                    egui::FontId::proportional(10.0),
-                                    Color32::from_gray(100),
+                                theme::paint_count_badge(
+                                    painter,
+                                    rect.right_center() + Vec2::new(-6.0, 0.0),
+                                    tables.len(),
                                 );
                             }
                         }
@@ -1096,19 +1110,19 @@ fn render_table_row_ui(
     let icon = table.kind.icon();
     let icon_color = kind_color(&table.kind);
     let available_w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 20.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(available_w, 22.0), Sense::click());
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
 
         let bg = if is_selected {
-            Color32::from_rgba_premultiplied(86, 156, 214, 35)
+            Color32::from_rgb(30, 58, 92)
         } else if resp.hovered() {
-            Color32::from_rgb(65, 69, 73)
+            theme::SURFACE_RAISED
         } else {
             Color32::TRANSPARENT
         };
-        painter.rect_filled(rect, 2.0, bg);
+        painter.rect_filled(rect, 4.0, bg);
 
         if is_selected {
             let bar = egui::Rect::from_min_size(
@@ -1119,35 +1133,31 @@ fn render_table_row_ui(
         }
 
         // Expand arrow
-        let arrow = if is_expanded { "▾" } else { "▸" };
+        let arrow = if is_expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
         painter.text(
-            rect.left_center() + Vec2::new(2.0, 0.0),
+            rect.left_center() + Vec2::new(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
             arrow,
-            egui::FontId::proportional(9.0),
-            Color32::from_gray(90),
+            egui::FontId::proportional(10.0),
+            theme::TEXT_FAINT,
         );
 
         // Type icon
         painter.text(
-            rect.left_center() + Vec2::new(14.0, 0.0),
+            rect.left_center() + Vec2::new(18.0, 0.0),
             egui::Align2::LEFT_CENTER,
             icon,
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(14.0),
             icon_color,
         );
 
         // Table name
-        let name_color = if is_selected {
-            Color32::WHITE
-        } else {
-            Color32::from_gray(210)
-        };
+        let name_color = if is_selected { Color32::WHITE } else { theme::TEXT };
         painter.text(
-            rect.left_center() + Vec2::new(26.0, 0.0),
+            rect.left_center() + Vec2::new(37.0, 0.0),
             egui::Align2::LEFT_CENTER,
             &table.name,
-            egui::FontId::monospace(12.0),
+            egui::FontId::proportional(13.0),
             name_color,
         );
     }
@@ -1175,7 +1185,7 @@ fn render_table_details(
     };
 
     if !d.loaded {
-        ui.label(RichText::new("⟳ Loading…").small().color(Color32::from_gray(90)));
+        ui.label(RichText::new(format!("{}  Loading…", icon::SPINNER)).small().color(theme::TEXT_FAINT));
         return toggled;
     }
 
@@ -1279,10 +1289,10 @@ fn render_detail_section_header(
 
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        let bg = if resp.hovered() { Color32::from_rgb(55, 59, 63) } else { Color32::TRANSPARENT };
+        let bg = if resp.hovered() { theme::SURFACE_RAISED } else { Color32::TRANSPARENT };
         painter.rect_filled(rect, 2.0, bg);
 
-        let arrow = if expanded { "▾" } else { "▸" };
+        let arrow = if expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
         painter.text(
             rect.left_center() + Vec2::new(2.0, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -1324,13 +1334,13 @@ fn render_kind_header_clickable(
         let painter = ui.painter();
 
         let bg = if resp.hovered() {
-            Color32::from_rgb(55, 59, 63)
+            theme::SURFACE_RAISED
         } else {
             Color32::TRANSPARENT
         };
         painter.rect_filled(rect, 2.0, bg);
 
-        let arrow = if expanded { "▾" } else { "▸" };
+        let arrow = if expanded { icon::CARET_DOWN } else { icon::CARET_RIGHT };
         painter.text(
             rect.left_center() + Vec2::new(4.0, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -1383,18 +1393,18 @@ fn render_function_row(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let bg = if resp.hovered() {
-            Color32::from_rgb(55, 59, 63)
+            theme::SURFACE_RAISED
         } else {
             Color32::TRANSPARENT
         };
-        painter.rect_filled(rect, 0.0, bg);
+        painter.rect_filled(rect, 4.0, bg);
 
         // Icon
         painter.text(
             rect.left_center() + Vec2::new(6.0, 0.0),
             egui::Align2::LEFT_CENTER,
             func.kind.icon(),
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(13.0),
             COLOR_FUNC,
         );
 
@@ -1405,7 +1415,7 @@ fn render_function_row(
             format!("{}(…)", func.name)
         };
         painter.text(
-            rect.left_center() + Vec2::new(20.0, 0.0),
+            rect.left_center() + Vec2::new(25.0, 0.0),
             egui::Align2::LEFT_CENTER,
             &sig,
             egui::FontId::monospace(11.0),
@@ -1461,22 +1471,22 @@ fn render_sequence_row(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let bg = if resp.hovered() {
-            Color32::from_rgb(55, 59, 63)
+            theme::SURFACE_RAISED
         } else {
             Color32::TRANSPARENT
         };
-        painter.rect_filled(rect, 0.0, bg);
+        painter.rect_filled(rect, 4.0, bg);
 
         painter.text(
             rect.left_center() + Vec2::new(6.0, 0.0),
             egui::Align2::LEFT_CENTER,
-            "⇡",
-            egui::FontId::proportional(11.0),
+            icon::LIST_NUMBERS,
+            egui::FontId::proportional(13.0),
             COLOR_SEQUENCE,
         );
 
         painter.text(
-            rect.left_center() + Vec2::new(20.0, 0.0),
+            rect.left_center() + Vec2::new(25.0, 0.0),
             egui::Align2::LEFT_CENTER,
             &seq.name,
             egui::FontId::monospace(11.0),

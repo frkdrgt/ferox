@@ -19,6 +19,10 @@ path = "src/main.rs"
 eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
 egui = { version = "0.29", default-features = false, features = ["default_fonts"] }
 egui_extras = { version = "0.29", default-features = false }
+# Phosphor icon names (regular). The font itself is a ~19 KB subset in
+# assets/phosphor-subset.ttf (scripts/subset_icons.py) — one consistent line-icon set
+# for toolbar, tree, tabs and cards instead of mixed Unicode symbols.
+egui-phosphor = { version = "0.7", default-features = false, features = ["regular"] }
 
 # PostgreSQL — type-conversion features not needed (simple_query returns plain strings)
 tokio-postgres = { version = "0.7" }
@@ -85,6 +89,8 @@ opt-level = 1
 
 [dev-dependencies]
 tokio-test = "0.4"
+# Already in the tree via egui — reads the icon subset in theme::tests
+ab_glyph = "0.2"
 
 # Build deps — icon generation
 [build-dependencies]

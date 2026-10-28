@@ -73,7 +73,7 @@ impl DbeaverImportDialog {
             .open(&mut open)
             .show(ctx, |ui| {
                 if let Some(err) = &self.error {
-                    ui.colored_label(egui::Color32::from_rgb(200, 60, 60), err);
+                    ui.colored_label(crate::ui::theme::DANGER, err);
                 } else if self.sources.is_empty() {
                     ui.label(i18n.dbeaver_not_found());
                 } else {
