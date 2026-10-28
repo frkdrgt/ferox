@@ -140,6 +140,8 @@ impl<'a> ResultTable<'a> {
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .min_scrolled_height(0.0)
+            // Default cap is 800 px — fill tall windows instead (rows stay virtualized).
+            .max_scroll_height(f32::INFINITY)
             .column(Column::exact(gutter_w).resizable(false));
 
         for i in 0..col_count {
@@ -326,6 +328,8 @@ impl<'a> ResultTable<'a> {
                                 }
                                 let n_selected = selected_rows.len();
                                 cell_resp.context_menu(|ui| {
+                                    // Menu entries are short — keep each on one line.
+                                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                                     if n_selected > 1 {
                                         ui.label(i18n.bulk_selected_count(n_selected));
                                         if ui.button(i18n.btn_bulk_copy()).clicked() {

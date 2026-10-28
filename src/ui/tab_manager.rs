@@ -177,7 +177,7 @@ impl TabManager {
         self.next_id += 1;
         self.tabs.push(Tab {
             id,
-            title: "⊕ Schema Diff".to_owned(),
+            title: "Schema Diff".to_owned(),
             content: TabContent::SchemaDiff(SchemaDiff::new(conn_id_a, conn_id_b)),
             conn_id: conn_id_a,
         });

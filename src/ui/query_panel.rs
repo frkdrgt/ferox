@@ -985,10 +985,6 @@ impl QueryPanel {
 
         let total_height = ui.available_height();
         let editor_height = (total_height * self.split_ratio).max(80.0);
-        // browse banner height ~28px, pagination bar ~28px, tabs ~24px, separator ~4px
-        let chrome_height = 28.0 + 24.0 + 4.0
-            + if self.browse.is_some() { 28.0 } else { 0.0 };
-        let results_height = (total_height - editor_height - chrome_height).max(60.0);
 
         // ── SQL editor + toolbar ─────────────────────────────────────────────
         egui::Frame::none()
@@ -1592,6 +1588,10 @@ impl QueryPanel {
                 });
             });
 
+        // Results take whatever is left once the editor (which shrinks to its
+        // content) and tab strip are laid out — minus the browse pagination bar.
+        let pagination_height = if self.browse.is_some() { 34.0 } else { 0.0 };
+        let results_height = (ui.available_height() - pagination_height).max(60.0);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .max_height(results_height)

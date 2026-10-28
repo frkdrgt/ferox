@@ -342,10 +342,12 @@ impl ErDiagram {
             );
 
             // Check if header is being dragged
+            // Hit-test where the press started, not where the pointer is once the
+            // drag threshold is crossed — a fast drag has already left the header.
             if canvas_resp.dragged_by(egui::PointerButton::Primary)
                 && self.dragging_node.is_none()
             {
-                if let Some(pos) = pointer_pos {
+                if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
                     if header_rect.contains(pos) {
                         self.dragging_node = Some(key.clone());
                         self.drag_offset = (pos - screen_pos) / zoom;

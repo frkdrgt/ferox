@@ -55,6 +55,9 @@ This release makes ferox **lighter at idle**, which matters most on older machin
 
 - **Browse mode filter** — the WHERE filter field was infinitely wide and pushed the Apply button off-screen (and clipped the "rows/page" label)
 - **Edit Table / New Table** — name, default and index fields were only a few characters wide
+- **Result grid** — now fills the window down to the bottom edge instead of stopping short on tall windows
+- **Row context menu** — entries no longer wrap onto two lines
+- **ER diagram** — quick drags on a table header are no longer ignored
 
 ---
 

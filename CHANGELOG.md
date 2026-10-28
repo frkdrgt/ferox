@@ -21,6 +21,10 @@
 
 ### Fixed
 - Browse mode WHERE filter row was infinitely wide, pushing the Apply button off-screen and clipping the pagination label
+- Result grid stopped short of the window bottom — its height was computed as if the editor used its full 35% share, and `egui_extras` capped it at 800 px
+- Result cell context menu wrapped its entries ("Export Selected as CSV…") onto two lines
+- ER diagram: a quick drag on a table header was ignored when the pointer left the header before egui's drag threshold — now hit-tests the press origin
+- Schema Diff tab showed two icons (leftover "⊕" in the title)
 - Edit Table / New Table: name, default and index fields rendered only a few characters wide (egui Grid cells start at zero width and clamp a TextEdit's `desired_width`) — now fixed-size; NOT NULL checkboxes no longer stretch every row
 
 ### Performance
@@ -32,6 +36,7 @@
 
 ### Changed (docs)
 - README: new screenshots from a fictional demo database (`scripts/demo_db.py`), v0.3.1 features, corrected shortcuts (there is no Ctrl+I), current size/RAM figures
+- README: screenshots retaken with the new UI, plus the home screen
 
 ---
 
