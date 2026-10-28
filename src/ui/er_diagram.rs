@@ -13,9 +13,9 @@ const HEADER_HEIGHT: f32 = 24.0;
 const GRID_SPACING_X: f32 = 280.0;
 const GRID_SPACING_Y: f32 = 240.0;
 
-const COLOR_HEADER_BG: Color32 = Color32::from_rgb(40, 80, 130);
-const COLOR_NODE_BG: Color32 = Color32::from_rgb(28, 32, 40);
-const COLOR_NODE_BORDER: Color32 = Color32::from_rgb(60, 80, 110);
+const COLOR_HEADER_BG: Color32 = Color32::from_rgb(36, 72, 118);
+const COLOR_NODE_BG: Color32 = crate::ui::theme::SURFACE;
+const COLOR_NODE_BORDER: Color32 = crate::ui::theme::BORDER_STRONG;
 const COLOR_PK: Color32 = Color32::from_rgb(255, 210, 80);
 const COLOR_FK_COL: Color32 = Color32::from_rgb(120, 200, 255);
 const COLOR_COL: Color32 = Color32::from_rgb(180, 185, 195);
@@ -238,7 +238,7 @@ impl ErDiagram {
         let painter = ui.painter_at(canvas_rect);
 
         // Background
-        painter.rect_filled(canvas_rect, Rounding::ZERO, Color32::from_rgb(15, 17, 22));
+        painter.rect_filled(canvas_rect, Rounding::ZERO, crate::ui::theme::EDITOR_BG);
 
         // Draw FK arrows first (behind nodes)
         for t in &tables {
@@ -342,10 +342,12 @@ impl ErDiagram {
             );
 
             // Check if header is being dragged
+            // Hit-test where the press started, not where the pointer is once the
+            // drag threshold is crossed — a fast drag has already left the header.
             if canvas_resp.dragged_by(egui::PointerButton::Primary)
                 && self.dragging_node.is_none()
             {
-                if let Some(pos) = pointer_pos {
+                if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
                     if header_rect.contains(pos) {
                         self.dragging_node = Some(key.clone());
                         self.drag_offset = (pos - screen_pos) / zoom;

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="ferox logo" width="112">
+
 ```
 ███████╗███████╗██████╗  ██████╗ ██╗  ██╗
 ██╔════╝██╔════╝██╔══██╗██╔═══██╗╚██╗██╔╝
@@ -28,6 +30,14 @@
 ## Screenshots
 
 *All screenshots use a fictional demo database — recreate it with [`scripts/demo_db.py`](scripts/demo_db.py).*
+
+<div align="center">
+
+![Home screen](screenshots/home.png)
+
+*Home screen — saved connections grouped by environment, shortcuts and recent queries*
+
+</div>
 
 | Query editor | EXPLAIN ANALYZE visualizer |
 |:------------:|:--------------------------:|

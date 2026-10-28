@@ -1095,6 +1095,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74744068685d20e004d1a4326c48403b6759e325c7fce8c5eeeab93f0a9f67ca"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-winit"
 version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1306,8 +1315,9 @@ dependencies = [
 
 [[package]]
 name = "ferox-pg"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
+ "ab_glyph",
  "aes 0.8.4",
  "anyhow",
  "async-trait",
@@ -1317,6 +1327,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-phosphor",
  "egui_extras",
  "futures-util",
  "hex",

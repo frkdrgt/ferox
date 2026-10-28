@@ -241,8 +241,8 @@ impl Autocomplete {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style())
-                    .fill(egui::Color32::from_rgb(28, 32, 40))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 70, 90)))
+                    .fill(crate::ui::theme::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, crate::ui::theme::BORDER_STRONG))
                     .inner_margin(egui::Margin::same(2.0))
                     .show(ui, |ui| {
                         ui.set_min_width(240.0);
@@ -250,7 +250,7 @@ impl Autocomplete {
                             let is_selected = i == self.selected;
 
                             let bg = if is_selected {
-                                egui::Color32::from_rgb(38, 56, 90)
+                                egui::Color32::from_rgb(30, 58, 92)
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
@@ -267,7 +267,7 @@ impl Autocomplete {
                             if ui.is_rect_visible(rect) {
                                 let painter = ui.painter();
                                 painter.rect_filled(rect, 2.0, if resp.hovered() {
-                                    egui::Color32::from_rgb(38, 56, 90)
+                                    egui::Color32::from_rgb(30, 58, 92)
                                 } else {
                                     bg
                                 });

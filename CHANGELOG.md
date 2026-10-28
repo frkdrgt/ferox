@@ -2,11 +2,41 @@
 
 ## [Unreleased]
 
-### Fixed
-- Edit Table / New Table: name, default and index fields rendered only a few characters wide (egui Grid cells start at zero width and clamp a TextEdit's `desired_width`) — now fixed-size; NOT NULL checkboxes no longer stretch every row
+---
+
+## [0.3.2] — 2026-10-28
+
+### Added
+- **Home screen** when no connection is open — saved connections / groups / history / saved-query counters, Quick Start list (click Connect or double-click a profile), shortcuts card, recent queries (click to copy), AI status
+- **Toolbar** in the menu row — New connection, New query, Dashboard, Join, Schema diff; Safe mode toggle and About on the right
+- **New logo** — fox-head outline holding a database (`assets/logo.svg`), transparent background; README header logo
+- Sidebar: per-schema count badges and a footer with the connected server and loaded schema/table counts
+- Dashboard: summary cards (tables, total size, active/all connections, unused/all indexes), proportional size bars, never-scanned indexes highlighted, connection state dots
 
 ### Changed
+- **Refreshed UI theme** — three-layer surface palette, cards, rounded tabs, empty states (`ui/theme.rs` tokens; no more hardcoded colors in panels)
+- **Phosphor line icons** everywhere (sidebar tree, tabs, toolbar, result tabs, message log, dialogs) instead of mixed Unicode/emoji symbols
+- Result grid: row-number gutter, themed header with sort arrows, column rules, right-aligned numbers
+- ER diagram, autocomplete popup, EXPLAIN bars and dialogs use theme colors; Connect is the primary button in the connection dialog
+
+### Fixed
+- Browse mode WHERE filter row was infinitely wide, pushing the Apply button off-screen and clipping the pagination label
+- Result grid stopped short of the window bottom — its height was computed as if the editor used its full 35% share, and `egui_extras` capped it at 800 px
+- Result cell context menu wrapped its entries ("Export Selected as CSV…") onto two lines
+- ER diagram: a quick drag on a table header was ignored when the pointer left the header before egui's drag threshold — now hit-tests the press origin
+- Schema Diff tab showed two icons (leftover "⊕" in the title)
+- Edit Table / New Table: name, default and index fields rendered only a few characters wide (egui Grid cells start at zero width and clamp a TextEdit's `desired_width`) — now fixed-size; NOT NULL checkboxes no longer stretch every row
+
+### Performance
+- **Idle CPU: one pegged core → 0** — fonts were rebuilt (and re-read from disk) every frame and the window title was re-sent every frame, forcing continuous repaints; fonts are now installed once and the title only sent on change
+- **No system fonts are read** — Segoe UI Symbol/Emoji (15 MB) were loaded on every start; all fonts are embedded now. Private bytes ~140 MB → ~95 MB
+- Phosphor icon font embedded as a 19 KB subset (`scripts/subset_icons.py`) instead of the full 480 KB; `cargo test` fails if a used icon is missing from the subset
+- Window icon and in-app logo are pre-rendered (256 / 128 px) — startup only decodes, no 512 px Lanczos resize
+- Binary size unchanged at ~10.1 MB (release, LTO) — the UI work and icon subset fit in what the smaller logo PNGs saved
+
+### Changed (docs)
 - README: new screenshots from a fictional demo database (`scripts/demo_db.py`), v0.3.1 features, corrected shortcuts (there is no Ctrl+I), current size/RAM figures
+- README: screenshots retaken with the new UI, plus the home screen
 
 ---
 

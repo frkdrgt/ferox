@@ -1,3 +1,4 @@
+use crate::ui::theme::{self as theme, icon};
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 
@@ -845,6 +846,10 @@ impl QueryPanel {
         self.running
     }
 
+    pub fn is_browsing(&self) -> bool {
+        self.browse.is_some()
+    }
+
     pub fn last_query_duration(&self) -> Option<f64> {
         self.last_elapsed_ms
     }
@@ -980,10 +985,6 @@ impl QueryPanel {
 
         let total_height = ui.available_height();
         let editor_height = (total_height * self.split_ratio).max(80.0);
-        // browse banner height ~28px, pagination bar ~28px, tabs ~24px, separator ~4px
-        let chrome_height = 28.0 + 24.0 + 4.0
-            + if self.browse.is_some() { 28.0 } else { 0.0 };
-        let results_height = (total_height - editor_height - chrome_height).max(60.0);
 
         // ── SQL editor + toolbar ─────────────────────────────────────────────
         egui::Frame::none()
@@ -1056,7 +1057,7 @@ impl QueryPanel {
                             self.browse = None;
                         }
                     }
-                    if ui.button("⬇").on_hover_text(i18n.hover_hist_next()).clicked() {
+                    if ui.button(icon::CLOCK_CLOCKWISE).on_hover_text(i18n.hover_hist_next()).clicked() {
                         match history.next() {
                             Some(entry) => {
                                 self.sql = entry.to_owned();
@@ -1103,13 +1104,13 @@ impl QueryPanel {
                     ui.separator();
 
                     // ── Group 4: Export ───────────────────────────────────────
-                    if ui.button("CSV").on_hover_text(i18n.hover_export_csv()).clicked() {
+                    if ui.button(format!("{} CSV", icon::FILE_CSV)).on_hover_text(i18n.hover_export_csv()).clicked() {
                         self.trigger_export_csv(db_tx);
                     }
-                    if ui.button("JSON").on_hover_text(i18n.hover_export_json()).clicked() {
+                    if ui.button(format!("{} JSON", icon::BRACKETS_CURLY)).on_hover_text(i18n.hover_export_json()).clicked() {
                         self.trigger_export_json(db_tx);
                     }
-                    if ui.button("INSERT").on_hover_text(i18n.hover_export_insert()).clicked() {
+                    if ui.button(format!("{} INSERT", icon::CODE)).on_hover_text(i18n.hover_export_insert()).clicked() {
                         self.trigger_export_insert(db_tx);
                     }
 
@@ -1127,7 +1128,11 @@ impl QueryPanel {
                     // ── Group 6: AI (shown only when API key configured) ───────
                     if ai_enabled {
                         ui.separator();
-                        let ai_label = if self.nl_bar_visible { "✦ AI ▲" } else { "✦ AI" };
+                        let ai_label = if self.nl_bar_visible {
+                            format!("{} AI {}", icon::SPARKLE, icon::CARET_UP)
+                        } else {
+                            format!("{} AI", icon::SPARKLE)
+                        };
                         let ai_fill = if self.nl_bar_visible {
                             egui::Color32::from_rgb(60, 90, 140)
                         } else {
@@ -1142,7 +1147,7 @@ impl QueryPanel {
                         }
                         let can_assist = !self.ai_pending && !self.sql.trim().is_empty();
                         ui.add_enabled_ui(can_assist, |ui| {
-                            ui.menu_button("✦ ▾", |ui| {
+                            ui.menu_button(format!("{} {}", icon::MAGIC_WAND, icon::CARET_DOWN), |ui| {
                                 if ui.button(i18n.ai_menu_explain()).clicked() {
                                     self.request_ai_assist(AiTask::Explain, ui.ctx());
                                     ui.close_menu();
@@ -1181,7 +1186,7 @@ impl QueryPanel {
                         let te_resp = ui.add_enabled(!self.ai_pending, te);
 
                         let submit = (!self.ai_pending && !self.nl_input.trim().is_empty())
-                            && (ui.button("→").clicked()
+                            && (ui.button(icon::PAPER_PLANE_RIGHT).clicked()
                                 || te_resp.lost_focus()
                                     && ui.input(|i| i.key_pressed(egui::Key::Enter)));
 
@@ -1371,7 +1376,7 @@ impl QueryPanel {
                     ui.horizontal(|ui| {
                         let has_filter = !state.applied_filter.is_empty();
                         let label_text = if has_filter {
-                            format!("{} {} 🔍", i18n.browse_prefix(), state.label())
+                            format!("{} {} {}", i18n.browse_prefix(), state.label(), icon::FUNNEL)
                         } else {
                             format!("{} {}", i18n.browse_prefix(), state.label())
                         };
@@ -1405,26 +1410,31 @@ impl QueryPanel {
                                 .small()
                                 .color(egui::Color32::from_rgb(150, 120, 220)),
                         );
-                        let filter_resp = ui.add(
-                            egui::TextEdit::singleline(&mut state.filter_sql)
-                                .hint_text(i18n.browse_filter_hint())
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace),
-                        );
-                        let apply = ui.small_button(i18n.btn_apply_filter()).clicked()
-                            || (filter_resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                        if apply {
-                            state.applied_filter = state.filter_sql.clone();
-                            state.page = 0;
-                            browse_filter_reload = true;
-                        }
-                        if !state.filter_sql.is_empty() && ui.small_button("✕").clicked() {
-                            state.filter_sql.clear();
-                            state.applied_filter.clear();
-                            state.page = 0;
-                            browse_filter_reload = true;
-                        }
+                        // Buttons laid out right-to-left first so the field takes only
+                        // the remaining width (an INFINITY-wide field pushed them off-screen).
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !state.filter_sql.is_empty() && ui.small_button(icon::X).clicked() {
+                                state.filter_sql.clear();
+                                state.applied_filter.clear();
+                                state.page = 0;
+                                browse_filter_reload = true;
+                            }
+                            let apply_clicked = ui.small_button(i18n.btn_apply_filter()).clicked();
+                            let filter_resp = ui.add(
+                                egui::TextEdit::singleline(&mut state.filter_sql)
+                                    .hint_text(i18n.browse_filter_hint())
+                                    .desired_width(ui.available_width())
+                                    .font(egui::TextStyle::Monospace),
+                            );
+                            let apply = apply_clicked
+                                || (filter_resp.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                            if apply {
+                                state.applied_filter = state.filter_sql.clone();
+                                state.page = 0;
+                                browse_filter_reload = true;
+                            }
+                        });
                     });
                     // Row 3: structured filter builder — picks column/operator/value and
                     // appends a rendered WHERE fragment into `filter_sql` above, so the
@@ -1490,26 +1500,27 @@ impl QueryPanel {
         }
 
         // ── Result tabs ──────────────────────────────────────────────────────
-        let tab_bg    = egui::Color32::from_rgb(49, 51, 53);   // #313335
-        let col_blue  = egui::Color32::from_rgb(78, 159, 222); // #4e9fde
-        let text_active = egui::Color32::from_rgb(169, 183, 198); // #a9b7c6
-        let text_dim    = egui::Color32::from_rgb(110, 123, 139); // #6e7b8b
+        let tab_bg    = theme::SURFACE;
+        let col_blue  = theme::ACCENT;
+        let text_active = theme::TEXT;
+        let text_dim    = theme::TEXT_MUTED;
 
         egui::Frame::none()
             .fill(tab_bg)
             .inner_margin(egui::Margin::symmetric(4.0, 2.0))
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    let results_label = i18n.tab_results();
-                    let history_label = i18n.tab_history();
-                    let saved_label = i18n.tab_saved();
-                    let tabs: &[(PanelTab, &str, Option<egui::Color32>)] = &[
-                        (PanelTab::Results, results_label, None),
-                        (PanelTab::History, history_label, None),
-                        (PanelTab::Saved, saved_label, None),
+                    let results_label = format!("{}  {}", icon::TABLE, i18n.tab_results());
+                    let history_label = format!("{}  {}", icon::CLOCK_COUNTER_CLOCKWISE, i18n.tab_history());
+                    let saved_label = format!("{}  {}", icon::BOOKMARK_SIMPLE, i18n.tab_saved());
+                    let tabs: [(PanelTab, &str, Option<egui::Color32>); 3] = [
+                        (PanelTab::Results, &results_label, None),
+                        (PanelTab::History, &history_label, None),
+                        (PanelTab::Saved, &saved_label, None),
                     ];
 
-                    for (tab, label, _color) in tabs {
+                    for (tab, label, _color) in &tabs {
                         let is_active = self.active_tab == *tab;
                         let text = egui::RichText::new(*label)
                             .color(if is_active { text_active } else { text_dim });
@@ -1553,9 +1564,9 @@ impl QueryPanel {
                         let error_count = self.log.iter().filter(|e| e.kind == LogKind::Error).count();
                         let is_active = self.active_tab == PanelTab::Messages;
                         let label_str = if error_count > 0 {
-                            i18n.tab_messages_n(error_count)
+                            format!("{}  {}", icon::CHAT_TEXT, i18n.tab_messages_n(error_count))
                         } else {
-                            i18n.tab_messages().to_owned()
+                            format!("{}  {}", icon::CHAT_TEXT, i18n.tab_messages())
                         };
                         let msg_color = if error_count > 0 {
                             egui::Color32::from_rgb(220, 80, 80)
@@ -1577,6 +1588,10 @@ impl QueryPanel {
                 });
             });
 
+        // Results take whatever is left once the editor (which shrinks to its
+        // content) and tab strip are laid out — minus the browse pagination bar.
+        let pagination_height = if self.browse.is_some() { 34.0 } else { 0.0 };
+        let results_height = (ui.available_height() - pagination_height).max(60.0);
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .max_height(results_height)
@@ -1605,7 +1620,7 @@ impl QueryPanel {
                                     .desired_width(180.0)
                                     .hint_text(hint),
                             );
-                            if !self.result_filter.is_empty() && ui.small_button("✕").clicked() {
+                            if !self.result_filter.is_empty() && ui.small_button(icon::X).clicked() {
                                 self.result_filter.clear();
                             }
 
@@ -1631,7 +1646,7 @@ impl QueryPanel {
                             } else {
                                 egui::Color32::TRANSPARENT
                             };
-                            if ui.add(egui::Button::new("🔍").fill(find_fill).small())
+                            if ui.add(egui::Button::new(icon::MAGNIFYING_GLASS).fill(find_fill).small())
                                 .on_hover_text("Find in results (Ctrl+F)")
                                 .clicked()
                             {
@@ -1669,7 +1684,7 @@ impl QueryPanel {
                                     self.search_match_count = 0;
                                     self.search_cache_text.clear();
                                 }
-                                if !self.search_text.is_empty() && ui.small_button("✕").clicked() {
+                                if !self.search_text.is_empty() && ui.small_button(icon::X).clicked() {
                                     self.search_text.clear();
                                     self.search_match_count = 0;
                                     self.search_cache_text.clear();
@@ -1934,7 +1949,12 @@ impl QueryPanel {
                             ui.label(i18n.lbl_running());
                         });
                     } else {
-                        ui.label(i18n.lbl_no_results_yet());
+                        theme::empty_state(
+                            ui,
+                            icon::TABLE,
+                            i18n.lbl_no_results_yet(),
+                            i18n.lbl_no_results_hint(),
+                        );
                     }
                 }
                 PanelTab::Plan => {
@@ -1985,10 +2005,10 @@ impl QueryPanel {
                     } else {
                         // Newest first
                         for entry in self.log.iter().rev() {
-                            let (icon, color) = match entry.kind {
-                                LogKind::Error   => ("✕", egui::Color32::from_rgb(220, 80,  80)),
-                                LogKind::Warning => ("⚠", egui::Color32::from_rgb(220, 170, 60)),
-                                LogKind::Info    => ("✓", egui::Color32::from_rgb(80,  200, 120)),
+                            let (glyph, color) = match entry.kind {
+                                LogKind::Error   => (icon::X_CIRCLE, theme::DANGER),
+                                LogKind::Warning => (icon::WARNING, theme::WARNING),
+                                LogKind::Info    => (icon::CHECK_CIRCLE, theme::SUCCESS),
                             };
                             let time_str = entry.time.format("%H:%M:%S").to_string();
 
@@ -1998,11 +2018,14 @@ impl QueryPanel {
                                     LogKind::Warning => egui::Color32::from_rgba_premultiplied(80, 60, 10, 40),
                                     LogKind::Info    => egui::Color32::TRANSPARENT,
                                 })
-                                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                                .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                                 .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
                                     // Header row: icon + timestamp
                                     ui.horizontal(|ui| {
-                                        ui.colored_label(color, icon);
+                                        ui.colored_label(color, glyph);
                                         ui.label(
                                             egui::RichText::new(&time_str)
                                                 .small()
@@ -2033,7 +2056,7 @@ impl QueryPanel {
                                         );
                                     }
                                 });
-                            ui.add_space(2.0);
+                            ui.add_space(4.0);
                         }
                     }
                 }

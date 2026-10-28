@@ -62,7 +62,7 @@ impl ImportCsvDialog {
                 ui.separator();
 
                 if let Some(err) = &self.error {
-                    ui.colored_label(egui::Color32::from_rgb(200, 60, 60), err);
+                    ui.colored_label(crate::ui::theme::DANGER, err);
                 } else if self.running {
                     ui.horizontal(|ui| {
                         ui.spinner();

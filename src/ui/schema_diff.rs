@@ -274,7 +274,7 @@ impl SchemaDiff {
                     if diffs.is_empty() {
                         ui.add_space(8.0);
                         ui.label(
-                            RichText::new("✓  Schemas are identical.")
+                            RichText::new("\u{E182}  Schemas are identical.")
                                 .color(Color32::from_rgb(73, 156, 84))
                                 .strong(),
                         );

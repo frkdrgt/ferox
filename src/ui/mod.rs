@@ -11,5 +11,7 @@ pub mod result_table;
 pub mod schema_diff;
 pub mod sidebar;
 pub mod syntax;
+pub mod home;
 pub mod tab_manager;
 pub mod table_dialog;
+pub mod theme;

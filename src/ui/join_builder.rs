@@ -151,7 +151,7 @@ impl JoinBuilder {
                         ui.weak(i18n.jb_n_cols(t.columns.len()));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button(crate::ui::theme::icon::X).clicked() {
                             remove_table = Some(i);
                         }
                     });
@@ -299,7 +299,7 @@ impl JoinBuilder {
                         ui.label("·");
                         col_picker(ui, ("jb_rc", ci), &mut cond.right_col, &rcols);
 
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button(crate::ui::theme::icon::X).clicked() {
                             remove_cond = Some(ci);
                         }
                     });

@@ -43,12 +43,11 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn load_icon() -> egui::IconData {
-    let bytes = include_bytes!("../assets/logo.png");
-    // Resize to 256×256 — winit on Windows ignores icons larger than this for
-    // the taskbar (ICON_BIG). The title bar uses the same data scaled down.
+    // Pre-rendered at 256×256 (winit on Windows ignores larger taskbar icons),
+    // so startup only decodes — no resize. The title bar scales it down.
+    let bytes = include_bytes!("../assets/icon-256.png");
     let img = image::load_from_memory(bytes)
-        .expect("Failed to decode logo.png")
-        .resize_exact(256, 256, image::imageops::FilterType::Lanczos3)
+        .expect("Failed to decode icon-256.png")
         .into_rgba8();
     let (width, height) = img.dimensions();
     egui::IconData { rgba: img.into_raw(), width, height }
