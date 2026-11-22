@@ -393,6 +393,9 @@ impl I18n {
     pub fn hover_add_filter(&self) -> &'static str {
         self.t("Append this condition to the WHERE filter above", "Bu koşulu yukarıdaki WHERE filtresine ekle")
     }
+    pub fn cell_filter_include(&self) -> &'static str { self.t("Filter by Selection", "Seçime Göre Filtrele") }
+    pub fn cell_filter_exclude(&self) -> &'static str { self.t("Exclude by Selection", "Seçimi Hariç Tut") }
+    pub fn cell_filter_remove(&self) -> &'static str { self.t("Remove Sort/Filter", "Sıralama/Filtreyi Kaldır") }
     pub fn schema_menu_new_table(&self) -> &'static str { self.t("\u{E3D4}  New Table…", "\u{E3D4}  Yeni Tablo…") }
     pub fn schema_menu_er(&self) -> &'static str { self.t("\u{EB58}  View ER Diagram", "\u{EB58}  ER Diyagramını Gör") }
     pub fn schema_menu_refresh(&self) -> &'static str { self.t("\u{E094}  Refresh", "\u{E094}  Yenile") }
