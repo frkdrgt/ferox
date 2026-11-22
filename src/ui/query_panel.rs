@@ -4,14 +4,14 @@ use std::sync::mpsc::Sender;
 
 use crate::ai::{AiAssistResult, AiTask};
 use crate::db::connection::ExportFormat;
-use crate::db::query::{cell_filter_fragment, guess_single_table, quote_ident, CellFilterKind};
+use crate::db::query::{cell_filter_fragment, cell_filter_value_count, guess_single_table, quote_ident, CellFilterKind};
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
 use crate::i18n::{I18n, Lang};
 use crate::snippets::Snippets;
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
-use crate::ui::result_table::{CellFilterRequest, ResultTable};
+use crate::ui::result_table::{column_values, filter_target_rows, CellFilterRequest, ResultTable};
 use crate::ui::syntax::highlight_sql;
 
 const PAGE_SIZE: usize = 100;
@@ -1472,11 +1472,13 @@ impl QueryPanel {
             .as_ref()
             .map(|r| r.columns.clone())
             .unwrap_or_default();
-        // Active cell for the funnel dropdown: (actual_row, col_idx, column name, value).
-        let active_cell: Option<(usize, usize, &str, &CellValue)> = self.selected_cell.and_then(|(r, c)| {
+        // Active cell for the funnel dropdown: (result, actual_row, col_idx, column name).
+        let active_cell: Option<(&QueryResult, usize, usize, &str)> = self.selected_cell.and_then(|(r, c)| {
             let result = self.result.as_ref()?;
-            Some((r, c, result.columns.get(c)?.as_str(), result.rows.get(r)?.get(c)?))
+            result.rows.get(r)?.get(c)?;
+            Some((result, r, c, result.columns.get(c)?.as_str()))
         });
+        let selected_rows = &self.selected_rows;
         let mut filter_action: Option<CellFilterAction> = None;
         if let Some(state) = &mut self.browse {
             egui::Frame::none()
@@ -1604,13 +1606,20 @@ impl QueryPanel {
                             || state.sort_col.is_some();
                         ui.menu_button(format!("{} {}", icon::FUNNEL, icon::CARET_DOWN), |ui| {
                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            // The active cell's column across the selection it belongs to.
+                            let target = active_cell.map(|(result, row, col, name)| {
+                                let rows = filter_target_rows(selected_rows, row);
+                                let values = column_values(result, &rows, col);
+                                (rows, col, name, values)
+                            });
+                            let n = target.as_ref().map_or(0, |(_, _, _, values)| cell_filter_value_count(values));
                             for (kind, label) in [
-                                (CellFilterKind::Include, i18n.cell_filter_include()),
-                                (CellFilterKind::Exclude, i18n.cell_filter_exclude()),
+                                (CellFilterKind::Include, i18n.cell_filter_include_n(n)),
+                                (CellFilterKind::Exclude, i18n.cell_filter_exclude_n(n)),
                             ] {
-                                let preview = active_cell.and_then(|(_, _, col, val)| {
-                                    cell_filter_fragment(col, std::slice::from_ref(val), kind)
-                                });
+                                let preview = target
+                                    .as_ref()
+                                    .and_then(|(_, _, name, values)| cell_filter_fragment(name, values, kind));
                                 let mut btn = ui
                                     .add_enabled(preview.is_some(), egui::Button::new(label))
                                     .on_disabled_hover_text(i18n.cell_filter_no_selection());
@@ -1619,9 +1628,9 @@ impl QueryPanel {
                                     btn = btn.on_hover_text(egui::RichText::new(shown).monospace());
                                 }
                                 if btn.clicked() {
-                                    if let Some((row, col, _, _)) = active_cell {
+                                    if let Some((rows, col, _, _)) = &target {
                                         filter_action =
-                                            Some(CellFilterAction::BySelection { kind, rows: vec![row], col });
+                                            Some(CellFilterAction::BySelection { kind, rows: rows.clone(), col: *col });
                                     }
                                     ui.close_menu();
                                 }
@@ -2104,7 +2113,8 @@ impl QueryPanel {
                         if let Some(req) = output.cell_filter_requested {
                             let action = match req {
                                 CellFilterRequest::BySelection { kind, row, col } => {
-                                    CellFilterAction::BySelection { kind, rows: vec![row], col }
+                                    let rows = filter_target_rows(&self.selected_rows, row);
+                                    CellFilterAction::BySelection { kind, rows, col }
                                 }
                                 CellFilterRequest::RemoveSortFilter => CellFilterAction::RemoveSortFilter,
                             };

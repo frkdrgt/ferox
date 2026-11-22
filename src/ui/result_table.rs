@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use egui_extras::{Column, TableBuilder};
 
-use crate::db::query::{cell_filter_fragment, CellFilterKind, CellValue, QueryResult};
+use crate::db::query::{cell_filter_fragment, cell_filter_value_count, CellFilterKind, CellValue, QueryResult};
 use crate::i18n::I18n;
 use crate::ui::theme::{self as theme, icon};
 
@@ -15,6 +15,7 @@ const NULL_LABEL: &str = "<null>";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellFilterRequest {
     /// Filter / Exclude by the right-clicked cell — `row` indexes `result.rows`.
+    /// The caller widens it to the selection with [`filter_target_rows`].
     BySelection { kind: CellFilterKind, row: usize, col: usize },
     /// Clear the WHERE filter and the sort.
     RemoveSortFilter,
@@ -53,6 +54,23 @@ pub struct TableOutput {
     pub duplicate_row_requested: Option<usize>,
     /// Right-click "Filter" submenu (browse mode only)
     pub cell_filter_requested: Option<CellFilterRequest>,
+}
+
+/// Rows a "Filter / Exclude by Selection" on `row` acts on: the whole multi-row
+/// selection when `row` is part of it, otherwise just `row`. Indices into
+/// `result.rows`, ascending.
+pub fn filter_target_rows(selected_rows: &BTreeSet<usize>, row: usize) -> Vec<usize> {
+    if selected_rows.len() > 1 && selected_rows.contains(&row) {
+        selected_rows.iter().copied().collect()
+    } else {
+        vec![row]
+    }
+}
+
+/// The cells of column `col` in `rows` (indices into `result.rows`); rows or
+/// columns out of range are skipped.
+pub fn column_values(result: &QueryResult, rows: &[usize], col: usize) -> Vec<CellValue> {
+    rows.iter().filter_map(|&r| result.rows.get(r)?.get(col).cloned()).collect()
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -183,7 +201,7 @@ impl<'a> ResultTable<'a> {
         let null_color = self.null_color;
         let browse_filters = self.browse_filters;
         let can_remove_filter = self.can_remove_filter;
-        let columns = &self.result.columns;
+        let result = self.result;
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
         // Take the row-selection state out so the closures can mutate it freely.
@@ -405,14 +423,18 @@ impl<'a> ResultTable<'a> {
                                         ui.separator();
                                         ui.menu_button(i18n.cell_filter_submenu(), |ui| {
                                             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                                            // Acts on the right-clicked cell; each entry's tooltip
-                                            // previews the condition it will add.
+                                            // Acts on the right-clicked cell's column across the
+                                            // selection it belongs to; each entry's tooltip previews
+                                            // the condition it will add.
+                                            let rows = filter_target_rows(&selected_rows, actual_idx);
+                                            let values = column_values(result, &rows, col_idx);
+                                            let n = cell_filter_value_count(&values);
                                             for (kind, label) in [
-                                                (CellFilterKind::Include, i18n.cell_filter_include()),
-                                                (CellFilterKind::Exclude, i18n.cell_filter_exclude()),
+                                                (CellFilterKind::Include, i18n.cell_filter_include_n(n)),
+                                                (CellFilterKind::Exclude, i18n.cell_filter_exclude_n(n)),
                                             ] {
-                                                let preview = columns.get(col_idx).and_then(|name| {
-                                                    cell_filter_fragment(name, std::slice::from_ref(cell), kind)
+                                                let preview = result.columns.get(col_idx).and_then(|name| {
+                                                    cell_filter_fragment(name, &values, kind)
                                                 });
                                                 let mut btn = ui.add_enabled(preview.is_some(), egui::Button::new(label));
                                                 if let Some(sql) = &preview {
@@ -575,5 +597,38 @@ fn compare_cells(a: &CellValue, b: &CellValue) -> std::cmp::Ordering {
             x.partial_cmp(y).unwrap_or(Ordering::Equal)
         }
         _ => a.to_string().cmp(&b.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_target_rows_widens_to_the_selection_only_when_inside_it() {
+        let sel: BTreeSet<usize> = [2, 5, 7].into_iter().collect();
+        assert_eq!(filter_target_rows(&sel, 5), vec![2, 5, 7]);
+        assert_eq!(filter_target_rows(&sel, 3), vec![3]);
+        let single: BTreeSet<usize> = [4].into_iter().collect();
+        assert_eq!(filter_target_rows(&single, 4), vec![4]);
+        assert_eq!(filter_target_rows(&BTreeSet::new(), 1), vec![1]);
+    }
+
+    #[test]
+    fn column_values_skips_out_of_range() {
+        let result = QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("x".into())],
+                vec![CellValue::Integer(2), CellValue::Null],
+            ],
+            rows_affected: None,
+            elapsed_ms: 0.0,
+        };
+        let got = column_values(&result, &[0, 1, 9], 1);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].to_string(), "x");
+        assert!(got[1].is_null());
+        assert!(column_values(&result, &[0], 5).is_empty());
     }
 }

@@ -98,14 +98,7 @@ pub enum CellFilterKind {
 /// `=` operator (`json`, `xml`, `point`) get a Postgres error.
 pub fn cell_filter_fragment(col: &str, values: &[CellValue], kind: CellFilterKind) -> Option<String> {
     let col = quote_ident(col);
-    let has_null = values.iter().any(CellValue::is_null);
-    let mut literals: Vec<String> = Vec::new();
-    for v in values.iter().filter(|v| !v.is_null()) {
-        let lit = cell_literal(v);
-        if !literals.contains(&lit) {
-            literals.push(lit);
-        }
-    }
+    let (literals, has_null) = distinct_filter_literals(values);
     let list = literals.join(", ");
     let fragment = match (kind, literals.len(), has_null) {
         (_, 0, false) => return None,
@@ -122,6 +115,27 @@ pub fn cell_filter_fragment(col: &str, values: &[CellValue], kind: CellFilterKin
         (CellFilterKind::Exclude, _, true) => format!("{col} NOT IN ({list})"),
     };
     Some(fragment)
+}
+
+/// Number of distinct values (NULL counts as one) a cell filter over `values`
+/// matches — what the "Filter by Selection (N values)" label shows.
+pub fn cell_filter_value_count(values: &[CellValue]) -> usize {
+    let (literals, has_null) = distinct_filter_literals(values);
+    literals.len() + usize::from(has_null)
+}
+
+/// The distinct SQL literals of the non-NULL `values`, in first-seen order, and
+/// whether any value was NULL.
+fn distinct_filter_literals(values: &[CellValue]) -> (Vec<String>, bool) {
+    let has_null = values.iter().any(CellValue::is_null);
+    let mut literals: Vec<String> = Vec::new();
+    for v in values.iter().filter(|v| !v.is_null()) {
+        let lit = cell_literal(v);
+        if !literals.contains(&lit) {
+            literals.push(lit);
+        }
+    }
+    (literals, has_null)
 }
 
 /// Rows per `INSERT ... VALUES (...), (...)` statement in generated scripts.
@@ -276,6 +290,14 @@ mod tests {
             Some("(\"c\" IN ('a', 'b') OR \"c\" IS NULL)")
         );
         assert_eq!(cell_filter_fragment("c", &two, Exclude).as_deref(), Some("\"c\" NOT IN ('a', 'b')"));
+    }
+
+    #[test]
+    fn cell_filter_value_count_dedups_and_counts_null_once() {
+        let v = [CellValue::Integer(1), CellValue::Null, CellValue::Integer(2), CellValue::Integer(1), CellValue::Null];
+        assert_eq!(cell_filter_value_count(&v), 3);
+        assert_eq!(cell_filter_value_count(&[CellValue::Text("a".into())]), 1);
+        assert_eq!(cell_filter_value_count(&[]), 0);
     }
 
     #[test]

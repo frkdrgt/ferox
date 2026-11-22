@@ -399,6 +399,22 @@ impl I18n {
     }
     pub fn cell_filter_include(&self) -> &'static str { self.t("Filter by Selection", "Seçime Göre Filtrele") }
     pub fn cell_filter_exclude(&self) -> &'static str { self.t("Exclude by Selection", "Seçimi Hariç Tut") }
+    /// "Filter by Selection", with the value count when the selection spans several values.
+    pub fn cell_filter_include_n(&self, n: usize) -> String {
+        match (self.0, n) {
+            (_, 0 | 1) => self.cell_filter_include().to_owned(),
+            (Lang::En, _) => format!("Filter by Selection ({n} values)"),
+            (Lang::Tr, _) => format!("Seçime Göre Filtrele ({n} değer)"),
+        }
+    }
+    /// "Exclude by Selection", with the value count when the selection spans several values.
+    pub fn cell_filter_exclude_n(&self, n: usize) -> String {
+        match (self.0, n) {
+            (_, 0 | 1) => self.cell_filter_exclude().to_owned(),
+            (Lang::En, _) => format!("Exclude by Selection ({n} values)"),
+            (Lang::Tr, _) => format!("Seçimi Hariç Tut ({n} değer)"),
+        }
+    }
     pub fn cell_filter_remove(&self) -> &'static str { self.t("Remove Sort/Filter", "Sıralama/Filtreyi Kaldır") }
     pub fn cell_filter_no_selection(&self) -> &'static str {
         self.t("Click a cell in the results first", "Önce sonuçlardan bir hücreye tıklayın")
