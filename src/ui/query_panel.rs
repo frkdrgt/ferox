@@ -315,6 +315,65 @@ impl FilterOp {
     }
 }
 
+/// Join a new WHERE fragment onto the user's filter text with `AND`.
+///
+/// `AND` binds tighter than `OR`, so `a = 1 OR b = 2` + `c = 3` must become
+/// `(a = 1 OR b = 2) AND c = 3`, not `a = 1 OR b = 2 AND c = 3`. The existing text
+/// is wrapped only when it has an `OR` at the top level; a plain `AND` chain stays
+/// flat so repeated appends don't pile up parentheses.
+fn append_filter_fragment(existing: &str, fragment: &str) -> String {
+    let existing = existing.trim();
+    if existing.is_empty() {
+        fragment.to_owned()
+    } else if has_top_level_or(existing) {
+        format!("({existing}) AND {fragment}")
+    } else {
+        format!("{existing} AND {fragment}")
+    }
+}
+
+/// True if `sql` contains the keyword `OR` (any case) outside parentheses,
+/// string literals and quoted identifiers. Erring towards `true` is harmless —
+/// it only adds a redundant pair of parentheses.
+fn has_top_level_or(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    // Bytes >= 0x80 belong to multi-byte UTF-8 characters — treat them as part of a word.
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80;
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') => {
+                // Skip to the closing quote; a doubled quote is an escaped one.
+                i += 1;
+                while i < b.len() {
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            c if depth <= 0
+                && c.eq_ignore_ascii_case(&b'o')
+                && b.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case(&b'r'))
+                && (i == 0 || !is_word(b[i - 1]))
+                && b.get(i + 2).is_none_or(|&n| !is_word(n)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// State for table data-browser (separate from free-form SQL editor).
 #[derive(Debug, Clone)]
 struct BrowseState {
@@ -1482,11 +1541,7 @@ impl QueryPanel {
                             let fragment = state
                                 .filter_builder_op
                                 .to_sql(&state.filter_builder_col, &state.filter_builder_val);
-                            if state.filter_sql.trim().is_empty() {
-                                state.filter_sql = fragment;
-                            } else {
-                                state.filter_sql = format!("{} AND {}", state.filter_sql.trim(), fragment);
-                            }
+                            state.filter_sql = append_filter_fragment(&state.filter_sql, &fragment);
                             state.filter_builder_val.clear();
                         }
                     });
@@ -2932,6 +2987,40 @@ mod tests {
         assert!(FilterOp::Eq.needs_value());
         assert!(!FilterOp::IsNull.needs_value());
         assert!(!FilterOp::IsNotNull.needs_value());
+    }
+
+    #[test]
+    fn append_filter_fragment_starts_from_empty() {
+        assert_eq!(append_filter_fragment("", "\"a\" = 1"), "\"a\" = 1");
+        assert_eq!(append_filter_fragment("   ", "\"a\" = 1"), "\"a\" = 1");
+    }
+
+    #[test]
+    fn append_filter_fragment_keeps_and_chains_flat() {
+        assert_eq!(
+            append_filter_fragment(" a = 1 AND b = 2 ", "c = 3"),
+            "a = 1 AND b = 2 AND c = 3"
+        );
+    }
+
+    #[test]
+    fn append_filter_fragment_wraps_top_level_or() {
+        assert_eq!(append_filter_fragment("a = 1 OR b = 2", "c = 3"), "(a = 1 OR b = 2) AND c = 3");
+        assert_eq!(append_filter_fragment("a = 1 or b = 2", "c = 3"), "(a = 1 or b = 2) AND c = 3");
+        assert_eq!(append_filter_fragment("a = 1 OR(b = 2)", "c = 3"), "(a = 1 OR(b = 2)) AND c = 3");
+        assert_eq!(append_filter_fragment("(a) OR (b)", "c"), "((a) OR (b)) AND c");
+    }
+
+    #[test]
+    fn append_filter_fragment_ignores_or_that_is_not_top_level() {
+        // Already parenthesised.
+        assert_eq!(append_filter_fragment("(a = 1 OR b = 2)", "c = 3"), "(a = 1 OR b = 2) AND c = 3");
+        // Inside a string literal (with an escaped quote) or a quoted identifier.
+        assert_eq!(append_filter_fragment("n = 'it''s this OR that'", "c"), "n = 'it''s this OR that' AND c");
+        assert_eq!(append_filter_fragment("\"or\" = 1", "c"), "\"or\" = 1 AND c");
+        // Part of a longer word.
+        assert_eq!(append_filter_fragment("color = 'red' AND ordered_at > now()", "c"), "color = 'red' AND ordered_at > now() AND c");
+        assert_eq!(append_filter_fragment("major = 1", "c"), "major = 1 AND c");
     }
 
     #[test]
