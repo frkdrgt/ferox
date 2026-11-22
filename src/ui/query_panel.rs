@@ -11,7 +11,7 @@ use crate::i18n::{I18n, Lang};
 use crate::snippets::Snippets;
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
-use crate::ui::result_table::ResultTable;
+use crate::ui::result_table::{CellFilterRequest, ResultTable};
 use crate::ui::syntax::highlight_sql;
 
 const PAGE_SIZE: usize = 100;
@@ -1907,6 +1907,12 @@ impl QueryPanel {
                             );
                             table.null_color = null_color;
                             table.db_sort_mode = self.browse.is_some();
+                            if let (Some(state), true) = (&self.browse, self.browse_result) {
+                                table.browse_filters = true;
+                                table.can_remove_filter = !state.filter_sql.trim().is_empty()
+                                    || !state.applied_filter.is_empty()
+                                    || state.sort_col.is_some();
+                            }
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);
                             }
@@ -2092,6 +2098,17 @@ impl QueryPanel {
                         // If sort changed, display_indices must be recomputed next frame.
                         if sort_did_change {
                             self.display_dirty = true;
+                        }
+
+                        // ── Handle cell right-click "Filter" submenu ─────────
+                        if let Some(req) = output.cell_filter_requested {
+                            let action = match req {
+                                CellFilterRequest::BySelection { kind, row, col } => {
+                                    CellFilterAction::BySelection { kind, rows: vec![row], col }
+                                }
+                                CellFilterRequest::RemoveSortFilter => CellFilterAction::RemoveSortFilter,
+                            };
+                            self.apply_cell_filter(action, db_tx);
                         }
                     } else if self.running {
                         ui.horizontal(|ui| {

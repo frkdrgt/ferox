@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use egui_extras::{Column, TableBuilder};
 
-use crate::db::query::{CellValue, QueryResult};
+use crate::db::query::{cell_filter_fragment, CellFilterKind, CellValue, QueryResult};
 use crate::i18n::I18n;
 use crate::ui::theme::{self as theme, icon};
 
@@ -10,6 +10,15 @@ const DEFAULT_NULL_COLOR: egui::Color32 = egui::Color32::from_rgb(128, 100, 100)
 const NULL_LABEL: &str = "<null>";
 
 // ── Output returned by show() ─────────────────────────────────────────────────
+
+/// A browse-mode filter action picked from a cell's right-click "Filter" submenu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellFilterRequest {
+    /// Filter / Exclude by the right-clicked cell — `row` indexes `result.rows`.
+    BySelection { kind: CellFilterKind, row: usize, col: usize },
+    /// Clear the WHERE filter and the sort.
+    RemoveSortFilter,
+}
 
 #[derive(Default)]
 pub struct TableOutput {
@@ -42,6 +51,8 @@ pub struct TableOutput {
     pub bulk_delete_requested: bool,
     /// Right-click "Duplicate Row" → actual row index
     pub duplicate_row_requested: Option<usize>,
+    /// Right-click "Filter" submenu (browse mode only)
+    pub cell_filter_requested: Option<CellFilterRequest>,
 }
 
 // ── ResultTable ───────────────────────────────────────────────────────────────
@@ -74,6 +85,10 @@ pub struct ResultTable<'a> {
     pub edit_needs_focus: bool,
     /// Color used to render `<null>` cells (user-configurable).
     pub null_color: egui::Color32,
+    /// Show the "Filter" submenu in the cell context menu (browse results only).
+    pub browse_filters: bool,
+    /// Enable "Remove Sort/Filter" in that submenu (a filter or sort is set).
+    pub can_remove_filter: bool,
 }
 
 impl<'a> ResultTable<'a> {
@@ -96,6 +111,8 @@ impl<'a> ResultTable<'a> {
             edit_value: String::new(),
             edit_needs_focus: false,
             null_color: DEFAULT_NULL_COLOR,
+            browse_filters: false,
+            can_remove_filter: false,
         }
     }
 
@@ -164,6 +181,9 @@ impl<'a> ResultTable<'a> {
         let edit_col = self.edit_col;
         let edit_needs_focus = self.edit_needs_focus;
         let null_color = self.null_color;
+        let browse_filters = self.browse_filters;
+        let can_remove_filter = self.can_remove_filter;
+        let columns = &self.result.columns;
         // Take the edit value out so the closure can mutate it freely.
         let mut edit_val = std::mem::take(&mut self.edit_value);
         // Take the row-selection state out so the closures can mutate it freely.
@@ -185,6 +205,7 @@ impl<'a> ResultTable<'a> {
         let mut bulk_export_insert_requested = false;
         let mut bulk_delete_requested = false;
         let mut duplicate_row_requested: Option<usize> = None;
+        let mut cell_filter_requested: Option<CellFilterRequest> = None;
 
         builder
             .header(28.0, |mut header| {
@@ -380,6 +401,43 @@ impl<'a> ResultTable<'a> {
                                         ui.ctx().copy_text(cell_str.clone());
                                         ui.close_menu();
                                     }
+                                    if browse_filters {
+                                        ui.separator();
+                                        ui.menu_button(i18n.cell_filter_submenu(), |ui| {
+                                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                                            // Acts on the right-clicked cell; each entry's tooltip
+                                            // previews the condition it will add.
+                                            for (kind, label) in [
+                                                (CellFilterKind::Include, i18n.cell_filter_include()),
+                                                (CellFilterKind::Exclude, i18n.cell_filter_exclude()),
+                                            ] {
+                                                let preview = columns.get(col_idx).and_then(|name| {
+                                                    cell_filter_fragment(name, std::slice::from_ref(cell), kind)
+                                                });
+                                                let mut btn = ui.add_enabled(preview.is_some(), egui::Button::new(label));
+                                                if let Some(sql) = &preview {
+                                                    let shown: String = sql.chars().take(200).collect();
+                                                    btn = btn.on_hover_text(egui::RichText::new(shown).monospace());
+                                                }
+                                                if btn.clicked() {
+                                                    cell_filter_requested = Some(CellFilterRequest::BySelection {
+                                                        kind,
+                                                        row: actual_idx,
+                                                        col: col_idx,
+                                                    });
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                            ui.separator();
+                                            if ui
+                                                .add_enabled(can_remove_filter, egui::Button::new(i18n.cell_filter_remove()))
+                                                .clicked()
+                                            {
+                                                cell_filter_requested = Some(CellFilterRequest::RemoveSortFilter);
+                                                ui.close_menu();
+                                            }
+                                        });
+                                    }
                                     ui.separator();
                                     if ui.button(i18n.cell_copy_as_markdown()).clicked() {
                                         copy_as_markdown = true;
@@ -455,6 +513,7 @@ impl<'a> ResultTable<'a> {
             bulk_export_insert_requested,
             bulk_delete_requested,
             duplicate_row_requested,
+            cell_filter_requested,
         }
     }
 

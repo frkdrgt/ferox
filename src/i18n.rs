@@ -364,6 +364,7 @@ impl I18n {
     pub fn seq_show_ddl(&self) -> &'static str { self.t("Show DDL", "DDL Göster") }
     pub fn cell_view_full(&self) -> &'static str { self.t("View Full Value", "Tam Değeri Göster") }
     pub fn cell_copy_value(&self) -> &'static str { self.t("Copy Value", "Değeri Kopyala") }
+    pub fn cell_filter_submenu(&self) -> &'static str { self.t("Filter", "Filtrele") }
     pub fn bulk_selected_count(&self, n: usize) -> String {
         match self.0 {
             Lang::En => format!("{n} rows selected"),
