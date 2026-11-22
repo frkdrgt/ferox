@@ -1472,6 +1472,12 @@ impl QueryPanel {
             .as_ref()
             .map(|r| r.columns.clone())
             .unwrap_or_default();
+        // Active cell for the funnel dropdown: (actual_row, col_idx, column name, value).
+        let active_cell: Option<(usize, usize, &str, &CellValue)> = self.selected_cell.and_then(|(r, c)| {
+            let result = self.result.as_ref()?;
+            Some((r, c, result.columns.get(c)?.as_str(), result.rows.get(r)?.get(c)?))
+        });
+        let mut filter_action: Option<CellFilterAction> = None;
         if let Some(state) = &mut self.browse {
             egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
@@ -1590,12 +1596,55 @@ impl QueryPanel {
                             state.filter_sql = append_filter_fragment(&state.filter_sql, &fragment);
                             state.filter_builder_val.clear();
                         }
+
+                        // pgAdmin-style dropdown acting on the active (last-clicked) cell.
+                        // Each entry's tooltip previews the condition it will add.
+                        let can_remove = !state.filter_sql.trim().is_empty()
+                            || !state.applied_filter.is_empty()
+                            || state.sort_col.is_some();
+                        ui.menu_button(format!("{} {}", icon::FUNNEL, icon::CARET_DOWN), |ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            for (kind, label) in [
+                                (CellFilterKind::Include, i18n.cell_filter_include()),
+                                (CellFilterKind::Exclude, i18n.cell_filter_exclude()),
+                            ] {
+                                let preview = active_cell.and_then(|(_, _, col, val)| {
+                                    cell_filter_fragment(col, std::slice::from_ref(val), kind)
+                                });
+                                let mut btn = ui
+                                    .add_enabled(preview.is_some(), egui::Button::new(label))
+                                    .on_disabled_hover_text(i18n.cell_filter_no_selection());
+                                if let Some(sql) = &preview {
+                                    let shown: String = sql.chars().take(200).collect();
+                                    btn = btn.on_hover_text(egui::RichText::new(shown).monospace());
+                                }
+                                if btn.clicked() {
+                                    if let Some((row, col, _, _)) = active_cell {
+                                        filter_action =
+                                            Some(CellFilterAction::BySelection { kind, rows: vec![row], col });
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .add_enabled(can_remove, egui::Button::new(i18n.cell_filter_remove()))
+                                .clicked()
+                            {
+                                filter_action = Some(CellFilterAction::RemoveSortFilter);
+                                ui.close_menu();
+                            }
+                        })
+                        .response
+                        .on_hover_text(i18n.hover_cell_filter_menu());
                     });
                 });
         }
         if browse_exit {
             self.browse = None;
             self.browse_result = false;
+        } else if let Some(action) = filter_action {
+            self.apply_cell_filter(action, db_tx);
         } else if browse_filter_reload {
             self.run_browse_page(db_tx);
         }
