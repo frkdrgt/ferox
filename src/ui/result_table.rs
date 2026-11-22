@@ -49,6 +49,8 @@ pub struct TableOutput {
 pub struct ResultTable<'a> {
     result: &'a QueryResult,
     pub selected_row: Option<usize>,
+    /// Active cell `(actual_row, col_idx)` — outlined in the grid. `actual_row`
+    /// indexes `result.rows`, so the outline follows the cell through client-side sorts.
     pub selected_cell: Option<(usize, usize)>,
     /// Multi-row selection (actual row indices, i.e. index into `result.rows`).
     /// Persisted by the caller across frames exactly like `edit_row`/`edit_col`.
@@ -156,6 +158,7 @@ impl<'a> ResultTable<'a> {
         let sort_col = self.sort_col;
         let sort_asc = self.sort_asc;
         let selected_row = self.selected_row;
+        let selected_cell = self.selected_cell;
         let _ = self.db_sort_mode; // used below via self.db_sort_mode directly
         let edit_row = self.edit_row;
         let edit_col = self.edit_col;
@@ -294,6 +297,16 @@ impl<'a> ResultTable<'a> {
                                 // in egui's widget registry — later allocation wins hover priority,
                                 // which makes right-click work even when the pointer is over the text.
                                 render_cell(ui, cell, null_color);
+
+                                // Outline the active cell — the target of Ctrl+C and the
+                                // browse-mode "Filter by Selection" toolbar actions.
+                                if selected_cell == Some((actual_idx, col_idx)) {
+                                    ui.painter().rect_stroke(
+                                        full_rect.shrink(1.0),
+                                        2.0,
+                                        egui::Stroke::new(1.5_f32, theme::ACCENT),
+                                    );
+                                }
 
                                 // Claim the full cell rect AFTER render so context_menu responds
                                 // to secondary clicks anywhere in the cell (not just empty space).

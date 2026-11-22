@@ -482,7 +482,8 @@ pub struct QueryPanel {
     pending_bulk_delete: Option<Vec<usize>>,
     /// Client-side filter text for the result table.
     result_filter: String,
-    /// Currently selected cell (display_row, col_idx) for Ctrl+C.
+    /// Active cell `(actual_row, col_idx)` — `actual_row` indexes `result.rows`.
+    /// Target of Ctrl+C and the browse-mode filter-by-selection actions.
     selected_cell: Option<(usize, usize)>,
     /// Cached sort order for the current result — reused across frames.
     sorted_indices: Vec<usize>,
