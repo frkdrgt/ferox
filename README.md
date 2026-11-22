@@ -98,6 +98,7 @@ AI-generated SQL is **never run automatically** — it opens in a review window.
 - **Schema browser** — lazy-loaded tree: schemas → tables / views / mat-views / foreign tables / functions / sequences / triggers, live filter
 - **Data browser** — double-click any table or view to browse with server-side pagination & ORDER BY
 - **Structured filter builder** — pick a column/operator/value (`=, !=, >, <, LIKE, ILIKE, IS NULL, IN`, …) in browse mode, or type a raw `WHERE` fragment directly
+- **Filter / Exclude by Selection** — filter browse results by a cell's value from the funnel ▾ menu or a cell's right-click **Filter** menu; with several rows selected it becomes `IN` / `NOT IN`. **Remove Sort/Filter** resets both
 - **Multi-row selection & bulk actions** — Shift/Ctrl+Click to select rows, then bulk **copy / export as CSV, JSON or INSERT / delete** (confirmation dialog, PK-based)
 - **Duplicate Row** — right-click a row to INSERT a copy, auto-omitting primary-key columns
 - **Inline editing** — double-click a cell to edit, Enter to commit, Escape to cancel
@@ -351,6 +352,7 @@ The startup update check runs on a fourth, short-lived thread the same way.
 - [x] **Export as INSERT statements**
 - [x] **Import connections from DBeaver**
 - [x] **Update check** — GitHub releases banner
+- [x] **Filter / Exclude by Selection** — pgAdmin-style, from the filter bar or a cell's right-click menu
 - [ ] **XLSX export**
 - [ ] **Restore open tabs on restart**
 - [ ] **Data compare** — diff table contents and generate sync SQL
