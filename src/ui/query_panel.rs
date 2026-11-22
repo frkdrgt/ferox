@@ -297,20 +297,21 @@ impl FilterOp {
 
     /// Build a `"col" OP value` WHERE fragment for this operator.
     fn to_sql(&self, col: &str, val: &str) -> String {
+        let col = quote_ident(col);
         match self {
-            FilterOp::IsNull => format!("\"{col}\" IS NULL"),
-            FilterOp::IsNotNull => format!("\"{col}\" IS NOT NULL"),
+            FilterOp::IsNull => format!("{col} IS NULL"),
+            FilterOp::IsNotNull => format!("{col} IS NOT NULL"),
             FilterOp::In => {
                 let items: Vec<String> = val
                     .split(',')
                     .map(|s| Self::render_value(s))
                     .filter(|s| !s.is_empty())
                     .collect();
-                format!("\"{col}\" IN ({})", items.join(", "))
+                format!("{col} IN ({})", items.join(", "))
             }
-            FilterOp::Like => format!("\"{col}\" LIKE {}", Self::render_value(val)),
-            FilterOp::ILike => format!("\"{col}\" ILIKE {}", Self::render_value(val)),
-            _ => format!("\"{col}\" {} {}", self.label(), Self::render_value(val)),
+            FilterOp::Like => format!("{col} LIKE {}", Self::render_value(val)),
+            FilterOp::ILike => format!("{col} ILIKE {}", Self::render_value(val)),
+            _ => format!("{col} {} {}", self.label(), Self::render_value(val)),
         }
     }
 }
@@ -2980,6 +2981,13 @@ mod tests {
     #[test]
     fn filter_op_like_quotes_pattern() {
         assert_eq!(FilterOp::Like.to_sql("name", "%foo%"), "\"name\" LIKE '%foo%'");
+    }
+
+    #[test]
+    fn filter_op_escapes_quotes_in_column_names() {
+        assert_eq!(FilterOp::Eq.to_sql("we\"ird", "1"), "\"we\"\"ird\" = 1");
+        assert_eq!(FilterOp::IsNull.to_sql("we\"ird", ""), "\"we\"\"ird\" IS NULL");
+        assert_eq!(FilterOp::In.to_sql("we\"ird", "1,2"), "\"we\"\"ird\" IN (1, 2)");
     }
 
     #[test]
