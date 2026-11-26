@@ -92,6 +92,9 @@ cargo build --release # ~6.9MB binary, LTO
 - `DbCommand`/`DbEvent` enum'larını `src/db/connection.rs`'de tut
 - Ctrl+Enter / F5 sadece `app.rs::execute_query()`'den geçer (seçim varsa seçimi çalıştırır, safe
   mode uygular) — panel içinde ikinci bir Ctrl+Enter handler'ı ekleme, sorgu iki kez çalışır
+- Browse filtre aksiyonları (filtre çubuğundaki huni ▾ menüsü, hücre sağ-tık "Filter" alt menüsü)
+  `query_panel.rs::apply_cell_filter()` üzerinden geçer; WHERE parçası `db/query.rs::cell_filter_fragment()`
+  ile üretilir — yeni bir giriş noktası eklerken ikisini de yeniden kullan
 - `DbCommand::ExecuteDdl` `batch_execute` (simple query) kullanır: çok statement'lı script tek
   implicit transaction'dır — tablo yapı editörünün DDL'i ya tamamen uygulanır ya hiç
 - Tüm sorgular `execute_query()` üzerinden geçmeli → `simple_query` protokol

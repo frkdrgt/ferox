@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Filter / Exclude by Selection** in browse mode (pgAdmin-style) — a funnel ▾ menu after "+Add" in the filter bar acts on the active cell, and right-clicking a cell offers the same entries under **Filter**. The condition is appended to the WHERE field and applied right away (`= value`, `IS DISTINCT FROM value`, `IS NULL` / `IS NOT NULL` for NULL cells); hovering an entry previews it. With several rows selected it becomes `IN (…)` / `NOT IN (…)` over the distinct values and the label shows the count. **Remove Sort/Filter** clears both the filter and the sort
+- Result grid: the active cell (the target of Ctrl+C and the filter menu) is outlined
+
+### Fixed
+- Browse filter builder: "+Add" appended `AND cond` to a WHERE field containing `OR` at the top level without parentheses, so `a OR b` became `a OR b AND c` and returned the wrong rows — the existing filter is now wrapped in parentheses
+- Browse filter builder: a column name containing `"` produced invalid SQL — identifiers are now escaped
+
 ---
 
 ## [0.3.2] — 2026-10-28

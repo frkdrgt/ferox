@@ -364,6 +364,7 @@ impl I18n {
     pub fn seq_show_ddl(&self) -> &'static str { self.t("Show DDL", "DDL Göster") }
     pub fn cell_view_full(&self) -> &'static str { self.t("View Full Value", "Tam Değeri Göster") }
     pub fn cell_copy_value(&self) -> &'static str { self.t("Copy Value", "Değeri Kopyala") }
+    pub fn cell_filter_submenu(&self) -> &'static str { self.t("Filter", "Filtrele") }
     pub fn bulk_selected_count(&self, n: usize) -> String {
         match self.0 {
             Lang::En => format!("{n} rows selected"),
@@ -392,6 +393,31 @@ impl I18n {
     pub fn btn_add_filter(&self) -> &'static str { self.t("+ Add", "+ Ekle") }
     pub fn hover_add_filter(&self) -> &'static str {
         self.t("Append this condition to the WHERE filter above", "Bu koşulu yukarıdaki WHERE filtresine ekle")
+    }
+    pub fn hover_cell_filter_menu(&self) -> &'static str {
+        self.t("Filter by the selected cell", "Seçili hücreye göre filtrele")
+    }
+    pub fn cell_filter_include(&self) -> &'static str { self.t("Filter by Selection", "Seçime Göre Filtrele") }
+    pub fn cell_filter_exclude(&self) -> &'static str { self.t("Exclude by Selection", "Seçimi Hariç Tut") }
+    /// "Filter by Selection", with the value count when the selection spans several values.
+    pub fn cell_filter_include_n(&self, n: usize) -> String {
+        match (self.0, n) {
+            (_, 0 | 1) => self.cell_filter_include().to_owned(),
+            (Lang::En, _) => format!("Filter by Selection ({n} values)"),
+            (Lang::Tr, _) => format!("Seçime Göre Filtrele ({n} değer)"),
+        }
+    }
+    /// "Exclude by Selection", with the value count when the selection spans several values.
+    pub fn cell_filter_exclude_n(&self, n: usize) -> String {
+        match (self.0, n) {
+            (_, 0 | 1) => self.cell_filter_exclude().to_owned(),
+            (Lang::En, _) => format!("Exclude by Selection ({n} values)"),
+            (Lang::Tr, _) => format!("Seçimi Hariç Tut ({n} değer)"),
+        }
+    }
+    pub fn cell_filter_remove(&self) -> &'static str { self.t("Remove Sort/Filter", "Sıralama/Filtreyi Kaldır") }
+    pub fn cell_filter_no_selection(&self) -> &'static str {
+        self.t("Click a cell in the results first", "Önce sonuçlardan bir hücreye tıklayın")
     }
     pub fn schema_menu_new_table(&self) -> &'static str { self.t("\u{E3D4}  New Table…", "\u{E3D4}  Yeni Tablo…") }
     pub fn schema_menu_er(&self) -> &'static str { self.t("\u{EB58}  View ER Diagram", "\u{EB58}  ER Diyagramını Gör") }

@@ -75,6 +75,69 @@ pub fn cell_literal(cell: &CellValue) -> String {
     }
 }
 
+/// Whether a cell filter keeps or drops the rows that match the selected value(s).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellFilterKind {
+    /// "Filter by Selection" — keep only matching rows.
+    Include,
+    /// "Exclude by Selection" — drop matching rows.
+    Exclude,
+}
+
+/// WHERE fragment for "Filter / Exclude by Selection": rows whose `col` equals
+/// one of `values` (duplicates ignored). Returns `None` when `values` is empty.
+///
+/// Values go through [`cell_literal`], so each is a quoted literal that Postgres
+/// coerces to the column's type. NULL is matched with `IS [NOT] NULL`, and
+/// Exclude keeps rows where `col` is NULL unless NULL itself was selected
+/// (a bare `<>` / `NOT IN` would silently drop them).
+///
+/// Limits: the value is rebuilt from the parsed [`CellValue`], not the raw text
+/// the server sent, so text that looks like a number can differ (`007` is shown
+/// and matched as `7`; numerics wider than `f64` lose digits). Types with no
+/// `=` operator (`json`, `xml`, `point`) get a Postgres error.
+pub fn cell_filter_fragment(col: &str, values: &[CellValue], kind: CellFilterKind) -> Option<String> {
+    let col = quote_ident(col);
+    let (literals, has_null) = distinct_filter_literals(values);
+    let list = literals.join(", ");
+    let fragment = match (kind, literals.len(), has_null) {
+        (_, 0, false) => return None,
+        (CellFilterKind::Include, 0, true) => format!("{col} IS NULL"),
+        (CellFilterKind::Include, 1, false) => format!("{col} = {list}"),
+        (CellFilterKind::Include, 1, true) => format!("({col} = {list} OR {col} IS NULL)"),
+        (CellFilterKind::Include, _, false) => format!("{col} IN ({list})"),
+        (CellFilterKind::Include, _, true) => format!("({col} IN ({list}) OR {col} IS NULL)"),
+        (CellFilterKind::Exclude, 0, true) => format!("{col} IS NOT NULL"),
+        (CellFilterKind::Exclude, 1, false) => format!("{col} IS DISTINCT FROM {list}"),
+        // NULL was selected too, so NULL rows go — which `<>` / `NOT IN` do by themselves.
+        (CellFilterKind::Exclude, 1, true) => format!("{col} <> {list}"),
+        (CellFilterKind::Exclude, _, false) => format!("({col} NOT IN ({list}) OR {col} IS NULL)"),
+        (CellFilterKind::Exclude, _, true) => format!("{col} NOT IN ({list})"),
+    };
+    Some(fragment)
+}
+
+/// Number of distinct values (NULL counts as one) a cell filter over `values`
+/// matches — what the "Filter by Selection (N values)" label shows.
+pub fn cell_filter_value_count(values: &[CellValue]) -> usize {
+    let (literals, has_null) = distinct_filter_literals(values);
+    literals.len() + usize::from(has_null)
+}
+
+/// The distinct SQL literals of the non-NULL `values`, in first-seen order, and
+/// whether any value was NULL.
+fn distinct_filter_literals(values: &[CellValue]) -> (Vec<String>, bool) {
+    let has_null = values.iter().any(CellValue::is_null);
+    let mut literals: Vec<String> = Vec::new();
+    for v in values.iter().filter(|v| !v.is_null()) {
+        let lit = cell_literal(v);
+        if !literals.contains(&lit) {
+            literals.push(lit);
+        }
+    }
+    (literals, has_null)
+}
+
 /// Rows per `INSERT ... VALUES (...), (...)` statement in generated scripts.
 pub const INSERT_BATCH_ROWS: usize = 100;
 
@@ -171,6 +234,75 @@ mod tests {
         let many: Vec<Vec<CellValue>> = (0..INSERT_BATCH_ROWS + 1).map(|i| vec![CellValue::Integer(i as i64)]).collect();
         let sql = insert_statements("t", &["id".to_owned()], &many);
         assert_eq!(sql.matches("INSERT INTO").count(), 2);
+    }
+
+    #[test]
+    fn cell_filter_single_value() {
+        use CellFilterKind::*;
+        let v = [CellValue::Integer(42)];
+        assert_eq!(cell_filter_fragment("id", &v, Include).as_deref(), Some("\"id\" = '42'"));
+        assert_eq!(cell_filter_fragment("id", &v, Exclude).as_deref(), Some("\"id\" IS DISTINCT FROM '42'"));
+    }
+
+    #[test]
+    fn cell_filter_null() {
+        use CellFilterKind::*;
+        let v = [CellValue::Null];
+        assert_eq!(cell_filter_fragment("x", &v, Include).as_deref(), Some("\"x\" IS NULL"));
+        assert_eq!(cell_filter_fragment("x", &v, Exclude).as_deref(), Some("\"x\" IS NOT NULL"));
+    }
+
+    #[test]
+    fn cell_filter_renders_literals_like_insert_export() {
+        use CellFilterKind::Include;
+        // Booleans as t/f: valid for bool columns and matches a text column holding "t".
+        assert_eq!(cell_filter_fragment("ok", &[CellValue::Boolean(true)], Include).as_deref(), Some("\"ok\" = 't'"));
+        assert_eq!(cell_filter_fragment("ok", &[CellValue::Boolean(false)], Include).as_deref(), Some("\"ok\" = 'f'"));
+        assert_eq!(cell_filter_fragment("n", &[CellValue::Float(1.5)], Include).as_deref(), Some("\"n\" = '1.5'"));
+        assert_eq!(cell_filter_fragment("b", &[CellValue::Bytes(vec![0xde, 0xad])], Include).as_deref(), Some("\"b\" = '\\xdead'"));
+        assert_eq!(
+            cell_filter_fragment("name", &[CellValue::Text("O'Brien".into())], Include).as_deref(),
+            Some("\"name\" = 'O''Brien'")
+        );
+        assert_eq!(cell_filter_fragment("we\"ird", &[CellValue::Integer(1)], Include).as_deref(), Some("\"we\"\"ird\" = '1'"));
+    }
+
+    #[test]
+    fn cell_filter_multiple_values() {
+        use CellFilterKind::*;
+        let v = [CellValue::Integer(1), CellValue::Integer(2), CellValue::Integer(1)];
+        assert_eq!(cell_filter_fragment("id", &v, Include).as_deref(), Some("\"id\" IN ('1', '2')"));
+        assert_eq!(
+            cell_filter_fragment("id", &v, Exclude).as_deref(),
+            Some("(\"id\" NOT IN ('1', '2') OR \"id\" IS NULL)")
+        );
+    }
+
+    #[test]
+    fn cell_filter_values_mixed_with_null() {
+        use CellFilterKind::*;
+        let one = [CellValue::Text("a".into()), CellValue::Null];
+        assert_eq!(cell_filter_fragment("c", &one, Include).as_deref(), Some("(\"c\" = 'a' OR \"c\" IS NULL)"));
+        assert_eq!(cell_filter_fragment("c", &one, Exclude).as_deref(), Some("\"c\" <> 'a'"));
+        let two = [CellValue::Text("a".into()), CellValue::Null, CellValue::Text("b".into())];
+        assert_eq!(
+            cell_filter_fragment("c", &two, Include).as_deref(),
+            Some("(\"c\" IN ('a', 'b') OR \"c\" IS NULL)")
+        );
+        assert_eq!(cell_filter_fragment("c", &two, Exclude).as_deref(), Some("\"c\" NOT IN ('a', 'b')"));
+    }
+
+    #[test]
+    fn cell_filter_value_count_dedups_and_counts_null_once() {
+        let v = [CellValue::Integer(1), CellValue::Null, CellValue::Integer(2), CellValue::Integer(1), CellValue::Null];
+        assert_eq!(cell_filter_value_count(&v), 3);
+        assert_eq!(cell_filter_value_count(&[CellValue::Text("a".into())]), 1);
+        assert_eq!(cell_filter_value_count(&[]), 0);
+    }
+
+    #[test]
+    fn cell_filter_empty_selection_is_none() {
+        assert_eq!(cell_filter_fragment("c", &[], CellFilterKind::Include), None);
     }
 
     #[test]

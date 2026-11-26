@@ -4,14 +4,14 @@ use std::sync::mpsc::Sender;
 
 use crate::ai::{AiAssistResult, AiTask};
 use crate::db::connection::ExportFormat;
-use crate::db::query::{guess_single_table, quote_ident};
+use crate::db::query::{cell_filter_fragment, cell_filter_value_count, guess_single_table, quote_ident, CellFilterKind};
 use crate::db::{query::CellValue, DbCommand, QueryResult};
 use crate::history::QueryHistory;
 use crate::i18n::{I18n, Lang};
 use crate::snippets::Snippets;
 use crate::ui::autocomplete::Autocomplete;
 use crate::ui::explain::{render_explain, ExplainResult};
-use crate::ui::result_table::ResultTable;
+use crate::ui::result_table::{column_values, filter_target_rows, CellFilterRequest, ResultTable};
 use crate::ui::syntax::highlight_sql;
 
 const PAGE_SIZE: usize = 100;
@@ -297,22 +297,93 @@ impl FilterOp {
 
     /// Build a `"col" OP value` WHERE fragment for this operator.
     fn to_sql(&self, col: &str, val: &str) -> String {
+        let col = quote_ident(col);
         match self {
-            FilterOp::IsNull => format!("\"{col}\" IS NULL"),
-            FilterOp::IsNotNull => format!("\"{col}\" IS NOT NULL"),
+            FilterOp::IsNull => format!("{col} IS NULL"),
+            FilterOp::IsNotNull => format!("{col} IS NOT NULL"),
             FilterOp::In => {
                 let items: Vec<String> = val
                     .split(',')
                     .map(|s| Self::render_value(s))
                     .filter(|s| !s.is_empty())
                     .collect();
-                format!("\"{col}\" IN ({})", items.join(", "))
+                format!("{col} IN ({})", items.join(", "))
             }
-            FilterOp::Like => format!("\"{col}\" LIKE {}", Self::render_value(val)),
-            FilterOp::ILike => format!("\"{col}\" ILIKE {}", Self::render_value(val)),
-            _ => format!("\"{col}\" {} {}", self.label(), Self::render_value(val)),
+            FilterOp::Like => format!("{col} LIKE {}", Self::render_value(val)),
+            FilterOp::ILike => format!("{col} ILIKE {}", Self::render_value(val)),
+            _ => format!("{col} {} {}", self.label(), Self::render_value(val)),
         }
     }
+}
+
+/// Join a new WHERE fragment onto the user's filter text with `AND`.
+///
+/// `AND` binds tighter than `OR`, so `a = 1 OR b = 2` + `c = 3` must become
+/// `(a = 1 OR b = 2) AND c = 3`, not `a = 1 OR b = 2 AND c = 3`. The existing text
+/// is wrapped only when it has an `OR` at the top level; a plain `AND` chain stays
+/// flat so repeated appends don't pile up parentheses.
+fn append_filter_fragment(existing: &str, fragment: &str) -> String {
+    let existing = existing.trim();
+    if existing.is_empty() {
+        fragment.to_owned()
+    } else if has_top_level_or(existing) {
+        format!("({existing}) AND {fragment}")
+    } else {
+        format!("{existing} AND {fragment}")
+    }
+}
+
+/// True if `sql` contains the keyword `OR` (any case) outside parentheses,
+/// string literals and quoted identifiers. Erring towards `true` is harmless —
+/// it only adds a redundant pair of parentheses.
+fn has_top_level_or(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    // Bytes >= 0x80 belong to multi-byte UTF-8 characters — treat them as part of a word.
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80;
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"') => {
+                // Skip to the closing quote; a doubled quote is an escaped one.
+                i += 1;
+                while i < b.len() {
+                    if b[i] == q {
+                        if b.get(i + 1) == Some(&q) {
+                            i += 2;
+                            continue;
+                        }
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            c if depth <= 0
+                && c.eq_ignore_ascii_case(&b'o')
+                && b.get(i + 1).is_some_and(|n| n.eq_ignore_ascii_case(&b'r'))
+                && (i == 0 || !is_word(b[i - 1]))
+                && b.get(i + 2).is_none_or(|&n| !is_word(n)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// A browse-mode filter action, shared by every UI entry point (toolbar
+/// dropdown, cell context menu, …) so they all behave the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CellFilterAction {
+    /// "Filter / Exclude by Selection": the values of column `col` in `rows`
+    /// (indices into `result.rows`).
+    BySelection { kind: CellFilterKind, rows: Vec<usize>, col: usize },
+    /// Clear the WHERE filter and the sort.
+    RemoveSortFilter,
 }
 
 /// State for table data-browser (separate from free-form SQL editor).
@@ -411,7 +482,8 @@ pub struct QueryPanel {
     pending_bulk_delete: Option<Vec<usize>>,
     /// Client-side filter text for the result table.
     result_filter: String,
-    /// Currently selected cell (display_row, col_idx) for Ctrl+C.
+    /// Active cell `(actual_row, col_idx)` — `actual_row` indexes `result.rows`.
+    /// Target of Ctrl+C and the browse-mode filter-by-selection actions.
     selected_cell: Option<(usize, usize)>,
     /// Cached sort order for the current result — reused across frames.
     sorted_indices: Vec<usize>,
@@ -880,6 +952,39 @@ impl QueryPanel {
             self.set_running();
             let _ = db_tx.send(DbCommand::Execute(sql));
         }
+    }
+
+    /// Run a browse filter action the way pgAdmin does: update the WHERE field,
+    /// apply it right away, go back to page 1 and reload. Like pressing Apply,
+    /// this also applies whatever else is in the WHERE field. No-op outside
+    /// browse mode or when the selection doesn't resolve to any cell.
+    fn apply_cell_filter(&mut self, action: CellFilterAction, db_tx: &Sender<DbCommand>) {
+        let Some(state) = self.browse.as_mut() else { return };
+        match action {
+            CellFilterAction::BySelection { kind, rows, col } => {
+                let Some(result) = &self.result else { return };
+                let Some(col_name) = result.columns.get(col) else { return };
+                let values: Vec<CellValue> = rows
+                    .iter()
+                    .filter_map(|&r| result.rows.get(r)?.get(col).cloned())
+                    .collect();
+                let Some(fragment) = cell_filter_fragment(col_name, &values, kind) else { return };
+                state.filter_sql = append_filter_fragment(&state.filter_sql, &fragment);
+            }
+            CellFilterAction::RemoveSortFilter => {
+                state.filter_sql.clear();
+                state.sort_col = None;
+                state.sort_asc = true;
+            }
+        }
+        state.applied_filter = state.filter_sql.clone();
+        state.page = 0;
+        // Row indices point into the page that is about to be replaced.
+        self.selected_cell = None;
+        self.selected_rows.clear();
+        self.row_select_anchor = None;
+        self.edit_state = None;
+        self.run_browse_page(db_tx);
     }
 
     /// Send `sql`: multiple statements → ExecuteMulti, single → Execute.
@@ -1367,6 +1472,14 @@ impl QueryPanel {
             .as_ref()
             .map(|r| r.columns.clone())
             .unwrap_or_default();
+        // Active cell for the funnel dropdown: (result, actual_row, col_idx, column name).
+        let active_cell: Option<(&QueryResult, usize, usize, &str)> = self.selected_cell.and_then(|(r, c)| {
+            let result = self.result.as_ref()?;
+            result.rows.get(r)?.get(c)?;
+            Some((result, r, c, result.columns.get(c)?.as_str()))
+        });
+        let selected_rows = &self.selected_rows;
+        let mut filter_action: Option<CellFilterAction> = None;
         if let Some(state) = &mut self.browse {
             egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
@@ -1482,19 +1595,65 @@ impl QueryPanel {
                             let fragment = state
                                 .filter_builder_op
                                 .to_sql(&state.filter_builder_col, &state.filter_builder_val);
-                            if state.filter_sql.trim().is_empty() {
-                                state.filter_sql = fragment;
-                            } else {
-                                state.filter_sql = format!("{} AND {}", state.filter_sql.trim(), fragment);
-                            }
+                            state.filter_sql = append_filter_fragment(&state.filter_sql, &fragment);
                             state.filter_builder_val.clear();
                         }
+
+                        // pgAdmin-style dropdown acting on the active (last-clicked) cell.
+                        // Each entry's tooltip previews the condition it will add.
+                        let can_remove = !state.filter_sql.trim().is_empty()
+                            || !state.applied_filter.is_empty()
+                            || state.sort_col.is_some();
+                        ui.menu_button(format!("{} {}", icon::FUNNEL, icon::CARET_DOWN), |ui| {
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                            // The active cell's column across the selection it belongs to.
+                            let target = active_cell.map(|(result, row, col, name)| {
+                                let rows = filter_target_rows(selected_rows, row);
+                                let values = column_values(result, &rows, col);
+                                (rows, col, name, values)
+                            });
+                            let n = target.as_ref().map_or(0, |(_, _, _, values)| cell_filter_value_count(values));
+                            for (kind, label) in [
+                                (CellFilterKind::Include, i18n.cell_filter_include_n(n)),
+                                (CellFilterKind::Exclude, i18n.cell_filter_exclude_n(n)),
+                            ] {
+                                let preview = target
+                                    .as_ref()
+                                    .and_then(|(_, _, name, values)| cell_filter_fragment(name, values, kind));
+                                let mut btn = ui
+                                    .add_enabled(preview.is_some(), egui::Button::new(label))
+                                    .on_disabled_hover_text(i18n.cell_filter_no_selection());
+                                if let Some(sql) = &preview {
+                                    let shown: String = sql.chars().take(200).collect();
+                                    btn = btn.on_hover_text(egui::RichText::new(shown).monospace());
+                                }
+                                if btn.clicked() {
+                                    if let Some((rows, col, _, _)) = &target {
+                                        filter_action =
+                                            Some(CellFilterAction::BySelection { kind, rows: rows.clone(), col: *col });
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .add_enabled(can_remove, egui::Button::new(i18n.cell_filter_remove()))
+                                .clicked()
+                            {
+                                filter_action = Some(CellFilterAction::RemoveSortFilter);
+                                ui.close_menu();
+                            }
+                        })
+                        .response
+                        .on_hover_text(i18n.hover_cell_filter_menu());
                     });
                 });
         }
         if browse_exit {
             self.browse = None;
             self.browse_result = false;
+        } else if let Some(action) = filter_action {
+            self.apply_cell_filter(action, db_tx);
         } else if browse_filter_reload {
             self.run_browse_page(db_tx);
         }
@@ -1757,6 +1916,12 @@ impl QueryPanel {
                             );
                             table.null_color = null_color;
                             table.db_sort_mode = self.browse.is_some();
+                            if let (Some(state), true) = (&self.browse, self.browse_result) {
+                                table.browse_filters = true;
+                                table.can_remove_filter = !state.filter_sql.trim().is_empty()
+                                    || !state.applied_filter.is_empty()
+                                    || state.sort_col.is_some();
+                            }
                             if let Some(cell) = self.selected_cell {
                                 table.selected_cell = Some(cell);
                             }
@@ -1942,6 +2107,18 @@ impl QueryPanel {
                         // If sort changed, display_indices must be recomputed next frame.
                         if sort_did_change {
                             self.display_dirty = true;
+                        }
+
+                        // ── Handle cell right-click "Filter" submenu ─────────
+                        if let Some(req) = output.cell_filter_requested {
+                            let action = match req {
+                                CellFilterRequest::BySelection { kind, row, col } => {
+                                    let rows = filter_target_rows(&self.selected_rows, row);
+                                    CellFilterAction::BySelection { kind, rows, col }
+                                }
+                                CellFilterRequest::RemoveSortFilter => CellFilterAction::RemoveSortFilter,
+                            };
+                            self.apply_cell_filter(action, db_tx);
                         }
                     } else if self.running {
                         ui.horizontal(|ui| {
@@ -2928,10 +3105,135 @@ mod tests {
     }
 
     #[test]
+    fn filter_op_escapes_quotes_in_column_names() {
+        assert_eq!(FilterOp::Eq.to_sql("we\"ird", "1"), "\"we\"\"ird\" = 1");
+        assert_eq!(FilterOp::IsNull.to_sql("we\"ird", ""), "\"we\"\"ird\" IS NULL");
+        assert_eq!(FilterOp::In.to_sql("we\"ird", "1,2"), "\"we\"\"ird\" IN (1, 2)");
+    }
+
+    #[test]
     fn filter_op_needs_value_excludes_null_checks() {
         assert!(FilterOp::Eq.needs_value());
         assert!(!FilterOp::IsNull.needs_value());
         assert!(!FilterOp::IsNotNull.needs_value());
+    }
+
+    #[test]
+    fn append_filter_fragment_starts_from_empty() {
+        assert_eq!(append_filter_fragment("", "\"a\" = 1"), "\"a\" = 1");
+        assert_eq!(append_filter_fragment("   ", "\"a\" = 1"), "\"a\" = 1");
+    }
+
+    #[test]
+    fn append_filter_fragment_keeps_and_chains_flat() {
+        assert_eq!(
+            append_filter_fragment(" a = 1 AND b = 2 ", "c = 3"),
+            "a = 1 AND b = 2 AND c = 3"
+        );
+    }
+
+    #[test]
+    fn append_filter_fragment_wraps_top_level_or() {
+        assert_eq!(append_filter_fragment("a = 1 OR b = 2", "c = 3"), "(a = 1 OR b = 2) AND c = 3");
+        assert_eq!(append_filter_fragment("a = 1 or b = 2", "c = 3"), "(a = 1 or b = 2) AND c = 3");
+        assert_eq!(append_filter_fragment("a = 1 OR(b = 2)", "c = 3"), "(a = 1 OR(b = 2)) AND c = 3");
+        assert_eq!(append_filter_fragment("(a) OR (b)", "c"), "((a) OR (b)) AND c");
+    }
+
+    #[test]
+    fn append_filter_fragment_ignores_or_that_is_not_top_level() {
+        // Already parenthesised.
+        assert_eq!(append_filter_fragment("(a = 1 OR b = 2)", "c = 3"), "(a = 1 OR b = 2) AND c = 3");
+        // Inside a string literal (with an escaped quote) or a quoted identifier.
+        assert_eq!(append_filter_fragment("n = 'it''s this OR that'", "c"), "n = 'it''s this OR that' AND c");
+        assert_eq!(append_filter_fragment("\"or\" = 1", "c"), "\"or\" = 1 AND c");
+        // Part of a longer word.
+        assert_eq!(append_filter_fragment("color = 'red' AND ordered_at > now()", "c"), "color = 'red' AND ordered_at > now() AND c");
+        assert_eq!(append_filter_fragment("major = 1", "c"), "major = 1 AND c");
+    }
+
+    /// A panel browsing `public.t` with two loaded rows: (1, 'alpha'), (2, NULL).
+    fn browsing_panel() -> (QueryPanel, Sender<DbCommand>, std::sync::mpsc::Receiver<DbCommand>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut panel = QueryPanel::default();
+        panel.start_browse("public".into(), "t".into(), &tx);
+        while rx.try_recv().is_ok() {}
+        panel.set_result(crate::db::QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec![CellValue::Integer(1), CellValue::Text("alpha".into())],
+                vec![CellValue::Integer(2), CellValue::Null],
+            ],
+            rows_affected: None,
+            elapsed_ms: 0.0,
+        });
+        (panel, tx, rx)
+    }
+
+    fn sent_sql(rx: &std::sync::mpsc::Receiver<DbCommand>) -> String {
+        match rx.try_recv() {
+            Ok(DbCommand::Execute(sql)) => sql,
+            _ => panic!("expected one DbCommand::Execute"),
+        }
+    }
+
+    #[test]
+    fn apply_cell_filter_filters_applies_and_reloads() {
+        let (mut panel, tx, rx) = browsing_panel();
+        panel.browse.as_mut().unwrap().page = 3;
+        panel.selected_rows.insert(1);
+        let by = |kind, rows| CellFilterAction::BySelection { kind, rows, col: 1 };
+
+        panel.apply_cell_filter(by(CellFilterKind::Include, vec![0]), &tx);
+        let state = panel.browse.as_ref().unwrap();
+        assert_eq!(state.filter_sql, "\"name\" = 'alpha'");
+        assert_eq!(state.applied_filter, state.filter_sql);
+        assert_eq!(state.page, 0);
+        assert!(panel.selected_rows.is_empty());
+        assert_eq!(
+            sent_sql(&rx),
+            "SELECT * FROM \"public\".\"t\" WHERE \"name\" = 'alpha' LIMIT 100 OFFSET 0;"
+        );
+
+        // A second action is ANDed onto the first; a NULL cell uses IS NOT NULL.
+        panel.apply_cell_filter(by(CellFilterKind::Exclude, vec![1]), &tx);
+        assert_eq!(
+            panel.browse.as_ref().unwrap().filter_sql,
+            "\"name\" = 'alpha' AND \"name\" IS NOT NULL"
+        );
+        assert!(sent_sql(&rx).contains("WHERE \"name\" = 'alpha' AND \"name\" IS NOT NULL"));
+    }
+
+    #[test]
+    fn apply_cell_filter_remove_clears_filter_and_sort() {
+        let (mut panel, tx, rx) = browsing_panel();
+        let state = panel.browse.as_mut().unwrap();
+        state.filter_sql = "id > 1".into();
+        state.applied_filter = "id > 1".into();
+        state.sort_col = Some("name".into());
+        state.sort_asc = false;
+
+        panel.apply_cell_filter(CellFilterAction::RemoveSortFilter, &tx);
+        let state = panel.browse.as_ref().unwrap();
+        assert!(state.filter_sql.is_empty() && state.applied_filter.is_empty());
+        assert_eq!(state.sort_col, None);
+        assert_eq!(sent_sql(&rx), "SELECT * FROM \"public\".\"t\" LIMIT 100 OFFSET 0;");
+    }
+
+    #[test]
+    fn apply_cell_filter_ignores_bad_selection_and_free_query_mode() {
+        let (mut panel, tx, rx) = browsing_panel();
+        // Column or row out of range: nothing changes, nothing is sent.
+        for (rows, col) in [(vec![0], 9), (vec![9], 1), (vec![], 1)] {
+            let action = CellFilterAction::BySelection { kind: CellFilterKind::Include, rows, col };
+            panel.apply_cell_filter(action, &tx);
+        }
+        assert!(panel.browse.as_ref().unwrap().filter_sql.is_empty());
+        assert!(rx.try_recv().is_err());
+
+        panel.browse = None;
+        panel.apply_cell_filter(CellFilterAction::RemoveSortFilter, &tx);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
